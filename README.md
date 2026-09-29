@@ -21,8 +21,7 @@ npx skills add 1nuYasha-cck/skills --list
 # 安装到用户级（对所有项目生效）
 npx skills add 1nuYasha-cck/skills --skill dev-flow -g
 
-# 之后检查并更新
-npx skills check
+# 之后更新
 npx skills update
 ```
 
