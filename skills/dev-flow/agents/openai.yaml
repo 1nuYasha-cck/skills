@@ -1,0 +1,4 @@
+interface:
+  display_name: "开发流程"
+  short_description: "按任务状态自动推进项目初始化、技术方案、任务包、开发执行、代码评审与提交"
+  default_prompt: "使用 $dev-flow 完成当前任务的下一步动作。"

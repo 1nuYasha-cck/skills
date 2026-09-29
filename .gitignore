@@ -1,0 +1,7 @@
+.DS_Store
+__pycache__/
+*.pyc
+
+# 开发说明只在本地保留，不上传
+AGENTS.md
+CLAUDE.md
