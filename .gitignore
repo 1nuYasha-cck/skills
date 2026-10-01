@@ -5,3 +5,6 @@ __pycache__/
 # 开发说明只在本地保留，不上传
 AGENTS.md
 CLAUDE.md
+
+# 每个 Skill 的本地开发计划，不进入提交或分发
+AGENT_WorkSpace/
