@@ -35,22 +35,24 @@
 #                             让 watcher 自己判定。
 #   --env QW_X=N              给 watcher 传环境变量（可重复，只接受 QW_ 开头的数字参数）
 #
-# 标准输出为若干行 键=值：task_id、task_dir、result_file、done_file、watcher_pane（视子命令而定）。
+# 标准输出为若干行 键=值：task_id、task_dir、result_file、done_file、watcher_pane（视子命令而定）；dispatch 在「已送达、未确认」时再多一行 start_confirmed=no。
 # 退出码：0 成功；2 参数错误；3 不在 herdr 中，或 HERDR_PANE_ID 指向不存在的 pane / 其他工作区（环境变量可能过期），Codex 里还包括自动发现调度者的 pane 没有唯一匹配；4 执行者不存在或不在当前工作区；
 #         5 拆 pane 失败或新 pane 的工作区、tab 与执行者不一致（已关闭新 pane）；
 #         6 不满足 --require-working；7 watcher 没有确认启动；
 #         8 dispatch：执行者被阻塞（提示词可能没有送达），没有启动 watcher；
-#         9 dispatch：没有确认执行者开始工作（提示词可能已送达，不要盲目重发），没有启动 watcher。
+#         9 dispatch：没有确认执行者开始工作，且 herdr 返回的不是 agent_prompt_stalled（提示词可能已送达，不要盲目重发），没有启动 watcher。
+#           herdr 返回 agent_prompt_stalled（提交已被接受，但 5 秒内没观察到 working/blocked，常见于 herdr 对 Codex 持续报 idle）时视为已送达、未确认：
+#           仍启动 watcher，成功时退出码 0，标准输出多一行 start_confirmed=no，标准错误打印警告。
 #
 # 可用环境变量（测试时可缩小）：SW_ROOT 任务目录根（默认 ${TMPDIR:-/tmp}/herdr-scheduling）、
-#   SW_RETRY_DELAY 读取执行者信息的重试间隔秒（2）、SW_CONFIRM_TRIES 确认启动的次数（6）、SW_CONFIRM_DELAY 间隔秒（1）。
+#   SW_RETRY_DELAY 读取执行者信息的重试间隔秒（2）、SW_CONFIRM_TRIES 确认启动的次数（20）、SW_CONFIRM_DELAY 间隔秒（1）。
 
 set -u
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=${SW_ROOT:-${TMPDIR:-/tmp}/herdr-scheduling}
 SW_RETRY_DELAY=${SW_RETRY_DELAY:-2}
-SW_CONFIRM_TRIES=${SW_CONFIRM_TRIES:-6}
+SW_CONFIRM_TRIES=${SW_CONFIRM_TRIES:-20}
 SW_CONFIRM_DELAY=${SW_CONFIRM_DELAY:-1}
 
 MODE=; EXEC=; KIND=; SCHED=; SCHED_KIND=; D_PANE=; D_KIND=; PROMPT_FILE=; RESULT_FILE=; NOTIFY_STOP=1; MARKER_DIR_OPT=; MARKER_DIR_OPT_SET=0
@@ -58,7 +60,7 @@ PROMPT_TEXT=; PROMPT_TEXT_SET=0; CALLBACK_ON=; CALLBACK_ON_SET=0; CALLBACK_PROMP
 REQUIRE_WORKING=0; ENVS=; TASK_DIR=
 A_KIND=; A_STATE=; A_CWD=; A_WS=; A_TAB=
 TASK_ID=; DONE_FILE=; MARKER_DIR=; MARKER_CREATED=0
-EXCLUDE_OPT=; SELF_EXCLUDE=; SELF_SOURCE=env; ENV_STALE_PANE=; SELF_PANE=; SELF_WS=; SELF_TAB=
+PROMPT_UNCONFIRMED=0; EXCLUDE_OPT=; SELF_EXCLUDE=; SELF_SOURCE=env; ENV_STALE_PANE=; SELF_PANE=; SELF_WS=; SELF_TAB=
 
 sw_err() { printf '%s\n' "$*" >&2; }
 
@@ -475,15 +477,21 @@ sw_do_run() {
     sleep "$SW_CONFIRM_DELAY"
     _scr=$(herdr pane read "$WP" --source visible --lines 12 2>/dev/null)
     case $_scr in
-      *开始守护*)
-        printf 'task_id=%s\ntask_dir=%s\nresult_file=%s\ndone_file=%s\nwatcher_pane=%s\n' \
-          "$TASK_ID" "$TASK_DIR" "$(kv_get "$TASK_DIR/ticket" result_file)" "$(kv_get "$TASK_DIR/ticket" done_file)" "$WP"
-        return 0 ;;
       *已有\ watcher*) sw_err "已有 watcher 在守护 ${EXEC}："; sw_err "$_scr"; return 7 ;;
     esac
+    # 已启动 = 屏幕出现「开始守护」，或 plan 里的 watcher_pane 等于本次新建的 pane（watcher 先写 plan 再输出，不依赖屏幕和 shell 启动速度）
+    _started=0
+    case $_scr in *开始守护*) _started=1 ;; esac
+    [ "$_started" = 1 ] || [ "$(kv_get "$TASK_DIR/plan" watcher_pane)" != "$WP" ] || _started=1
+    if [ "$_started" = 1 ]; then
+      printf 'task_id=%s\ntask_dir=%s\nresult_file=%s\ndone_file=%s\nwatcher_pane=%s\n' \
+        "$TASK_ID" "$TASK_DIR" "$(kv_get "$TASK_DIR/ticket" result_file)" "$(kv_get "$TASK_DIR/ticket" done_file)" "$WP"
+      [ "$PROMPT_UNCONFIRMED" != 1 ] || printf 'start_confirmed=no\n'
+      return 0
+    fi
     _i=$((_i + 1))
   done
-  sw_err "watcher 没有确认启动（${WP} 保留，供查看）：$_scr"
+  sw_err "watcher 没有确认启动（${WP} 保留，供查看；也可看 ${TASK_DIR}/plan 是否已有 watcher_pane）：$_scr"
   return 7
 }
 
@@ -525,6 +533,7 @@ sw_compose_prompt() {
 # 此后执行者即使很快做完（读到 idle/done），也算已开始，watcher 必须照常启动（已有 done 或停下会立即回调）。
 # 命令失败（stalled、timeout 等）时才靠再读一次状态判断。不重发提示词：失败后是否已送达无法确定，重发可能让任务重复执行。
 sw_do_prompt() {
+  PROMPT_UNCONFIRMED=0
   _pe=$(herdr agent prompt "$EXEC" "$FULL_PROMPT" --wait --until working --until blocked --timeout 15000 2>&1); _prc=$?
   sw_agent_info "$EXEC" || return $?
   case $A_STATE in
@@ -538,6 +547,14 @@ sw_do_prompt() {
       return 8 ;;
   esac
   [ "$_prc" -eq 0 ] && return 0
+  # agent_prompt_stalled：herdr 已接受提交，但 5 秒内没观察到 working/blocked（herdr 对某些 agent，实测 Codex，会持续报 idle）。
+  # 视为已送达、未确认：不重发，仍启动 watcher；执行者其实没在工作时，watcher 会在观察期后通知并回调。
+  case $_pe in
+    *'"code":"agent_prompt_stalled"'*)
+      PROMPT_UNCONFIRMED=1
+      sw_err "警告：herdr 已接受提示词，但 5 秒内没有观察到执行者 ${EXEC} 开始工作（当前状态 ${A_STATE:-未知}）；不重发提示词，照常启动 watcher。执行者若其实没有在工作，约 75 秒后 watcher 会通知并回调调度者。"
+      return 0 ;;
+  esac
   sw_err "没有确认执行者 ${EXEC} 开始工作（当前状态 ${A_STATE:-未知}），没有启动 watcher；提示词可能已送达，不要盲目重发，请先读它的屏幕"
   sw_err "herdr 返回：${_pe}"
   return 9

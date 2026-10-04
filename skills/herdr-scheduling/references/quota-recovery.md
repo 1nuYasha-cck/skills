@@ -100,7 +100,7 @@ herdr 命令（`agent get`、`agent read`）瞬时失败时最多尝试 3 次，
 - 真实额度耗尽下的行为**未实测**：额度期间 herdr 对 Claude 标记的状态、Codex 额度耗尽后会话能否输入、限额状态下 `claude -p "/usage"` 和新开的 Codex 会话能否正常工作，都未验证。测试用桩 herdr 和模拟文案覆盖了状态机的所有分支。
 - 恢复时间未知且屏幕上的旧额度文案一直留着时，watcher 无法判断额度是否已恢复，会探测到 12 小时上限后通知用户。
 - 派发模式下 `blocked`（等批准或回答）后继续守护的行为只用桩 herdr 验证：真实 agent 的审批提示能否被 herdr 稳定标记为 `blocked`、批准后状态变化的时序，以及最长 `QW_BLOCK_MAX` 的等待在真机上的表现，均未验证。
-- herdr 对某些 agent 的状态检测不可靠：实测 Codex 在启动阶段约 17 秒、以及某些运行中会报 `done` 而实际仍在工作，屏幕在这段时间内也没有变化，所以「稳定停下」不能当作「已完成」；`stop` 模式因此有观察期，skill 因此让执行者创建自己指定的完成标志（路径 `<标志目录>/<任务ID>.done`）作为确定的完成信号。
+- herdr 对某些 agent 的状态检测不可靠：实测 Codex 在启动阶段约 17 秒、以及某些运行中会报 `done` 而实际仍在工作，屏幕在这段时间内也没有变化，所以「稳定停下」不能当作「已完成」；`stop` 模式因此有观察期，skill 因此让执行者创建自己指定的完成标志（路径 `<标志目录>/<任务ID>.done`）作为确定的完成信号。 同样的不可靠也出现在派发时：herdr 可能在整个任务期间持续报 `idle`，`herdr agent prompt --wait` 因此返回 `agent_prompt_stalled`；`dispatch` 把它当作「已送达、未确认」，仍启动 watcher（退出码 0，输出 `start_confirmed=no`），watcher 靠完成标志和观察期兜底，最坏多一次回调。`dispatch` 确认 watcher 已启动时同时看屏幕和 `plan`，缺省最多等 20 秒。
 - 环境变量可能过期：Codex 的共享 app-server 守护进程若在更早的 herdr pane 里启动，经它启动的所有 Codex agent 的工具子进程继承它的旧 `HERDR_PANE_ID` 等变量（`herdr pane current` 同样依赖这些变量，无法纠正）。`start-watcher.sh` 在 Codex 里（`CODEX_THREAD_ID` 非空）检测到过期时，用 `herdr agent list` 按类型、工作目录、状态自动找到调度者真实所在的 pane，只在唯一匹配时采用，否则退出码 3；`whoami` 子命令输出结果。局限：旧值指向的 pane 仍存在、是 codex 且没有 `agent_session` 可比对时无法判定过期。根治办法是用 `codex --no-daemon` 启动 Codex。
 - 读屏降级到 `visible` 时只含当前可见屏幕，历史行比 `recent-unwrapped` 少；`blocked` 时审批提示和额度菜单都在可见区域内，判定足够。`agent_not_idle` 已在 Claude 执行者上实测（`working` 和 `blocked` 都触发）；Codex 在这两种状态下的读屏行为未实测，但处理逻辑不依赖 agent 种类。
 - 休眠期间的行为未实测；等待用分段 `sleep` 并对比时间戳，唤醒后会自我纠正。
