@@ -15,8 +15,14 @@
 
 1. 前置检查同 `dispatch.md` 第 1 节第 1 步。
 2. 目标 pane 必须由用户指明，并且在当前工作区（`workspace_id == $HERDR_WORKSPACE_ID`）；没有指明或不在当前工作区就停下询问。目标必须是 agent pane（`herdr agent get` 能取到 kind）。
-3. 创建任务目录和 `ticket`：`mode=watch`，`executor_pane`、`executor_kind` 填目标，`scheduler_pane` 留空。
-4. 按 `dispatch.md` 第 4 节启动 watcher，然后报告并结束本轮。
+3. 一条命令完成创建任务目录、拆 pane、核对、启动和确认：
+
+   ```bash
+   sh '<skill 目录>/scripts/start-watcher.sh' watch --executor <目标 pane> [--notify-stop 0] [--require-working] [--env QW_X=N]...
+   ```
+
+   它写 `mode=watch` 的 `ticket`（`scheduler_pane` 为空），再按 `dispatch.md` 第 5 节的方式启动 watcher；输出 `task_id`、`task_dir`、`watcher_pane`，退出码含义同 `dispatch.md` 第 5 节。`--require-working` 只用于「还没有确认过执行者已开始」的场景。盯一个**已经停在额度上**的 pane（本来就是 `idle`），以及对刚派发、已经确认过 `working` 的执行者（如 `dev-flow` 联动，它可能很快就完成或触达额度），都**不要加**，否则会因为「当前不是 working」而放弃守护。
+4. 报告并结束本轮。
 
 ## 2. 状态机
 
@@ -66,11 +72,13 @@ herdr 命令（`agent get`、`agent read`）瞬时失败时最多尝试 3 次，
 
 `herdr notification show "<标题>" --body "<正文>"`（不耗模型额度），同时打印在 watcher pane 里。调度者与执行者同账号时，额度耗尽期间调度者可能也无法响应，所以不依赖调度者转述。通知发送失败不影响主流程。
 
+**静音选项**：`ticket` 的可选字段 `notify_stop=0`（`start-watcher.sh` 的 `--notify-stop 0`）只关闭一种通知——**监视模式下目标正常停下**（状态为 `idle` 或 `done`，「目标已停下，原因不是额度」），适合被守护的 agent 每个阶段都会正常结束的场景。**`blocked`（在等批准或回答）、`unknown` 等需要用户处理的停下不受静音影响，照常通知**。额度已限、恢复时间未知、不限时、超过 24 小时、重试用尽、探测超时、目标不可用、恢复失败、改派失败、回调失败，以及派发模式下「执行者停下但没有完成标志」的通知**始终发送**，不能被静音。默认 `1`，字段缺失或取值不合法按 `1` 处理。
+
 ## 7. 防护与参数
 
 - **同一目标只允许一个 watcher**：用 `mkdir` 原子锁目录 `lock-<pane>`；已有且进程存活则拒绝，进程已死则接管。
 - **恢复计划**写在任务目录的 `plan`（`state`、`class`、`reset_epoch`、`reset_source`、`attempts`、`callback`、`probe_deadline` 等），watcher 丢失时可据此人工接手。
-- **重新启动 watcher**：在新开的专用 pane 里再运行同一条命令（写法见 `dispatch.md` 第 4 节：`sh '<skill 目录>/scripts/quota-watcher.sh' --ticket '<任务目录>'`，整条作为一个带引号的字符串）；`plan` 里的 `attempts` 和 `callback` 会被沿用。
+- **重新启动 watcher**：运行 `sh '<skill 目录>/scripts/start-watcher.sh' run "<任务目录>"`（写法见 `dispatch.md` 第 5 节；手工写法是在新开的专用 pane 里整串运行 `sh '<skill 目录>/scripts/quota-watcher.sh' --ticket '<任务目录>'`）；`plan` 里的 `attempts` 和 `callback` 会被沿用。
 - 环境变量（默认值适合真实使用）：`QW_GRACE`（宽限期，300 秒）、`QW_BUFFER`（到点缓冲，60 秒）、`QW_FAR`（超过则不等待，86400 秒）、`QW_PROBE_INTERVAL`（探测间隔，1800 秒）、`QW_PROBE_MAX`（探测上限，43200 秒）、`QW_MAX_ATTEMPTS`（恢复重试上限，3）、`QW_RETRIES`（herdr 命令瞬时失败的尝试次数，3）、`QW_RETRY_DELAY`（重试间隔，3 秒）。
 
 ## 8. 结束与 pane

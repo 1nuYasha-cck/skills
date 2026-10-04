@@ -44,20 +44,24 @@
 
 ## 3. 创建任务目录和派发单
 
-任务目录放在 `${TMPDIR:-/tmp}/herdr-scheduling/<任务ID>/`，不写入使用者的项目。任务ID = `hs-<YYYYMMDDHHMMSS>-<执行者 pane，: 和 / 换成 ->`。
+用辅助脚本 `start-watcher.sh init`。它在 `${TMPDIR:-/tmp}/herdr-scheduling/<任务ID>/` 下创建任务目录并写 `ticket`（不写入使用者的项目），**不创建 pane、不启动任何进程**：
 
 ```bash
-ROOT="${TMPDIR:-/tmp}/herdr-scheduling"
-ID="hs-$(date +%Y%m%d%H%M%S)-$(printf %s "<执行者 pane>" | tr ':/' '--')"
-TD="$ROOT/$ID"; mkdir -p "$TD"
+sh '<skill 目录>/scripts/start-watcher.sh' init --mode A --executor <执行者 pane> \
+  --scheduler "$HERDR_PANE_ID" --scheduler-kind <调度者 kind> [--prompt-file <任务内容文件>] [--result-file <路径>]
 ```
 
-写 `prompt.txt`（原始任务内容，方案 D 改派时要用）和 `ticket`（每行 `键=值`）：
+- 方案 D 改为 `--mode D`，并加 `--d-pane <改派目标 pane> --d-kind <kind> --prompt-file <原始任务内容文件>`（改派时要把原始任务发给新执行者）。
+- 输出四行 `键=值`：`task_id`、`task_dir`、`result_file`、`done_file`。下一节派发提示词里要用 `result_file` 和 `done_file`。
+- 任务ID = `hs-<YYYYMMDDHHMMSS>-<执行者 pane，: 和 / 换成 ->`，同一秒重复时自动追加序号。
+- 退出码：2 参数错误；3 不在 herdr 中；4 执行者不存在或不在当前工作区。
+
+`ticket` 是每行 `键=值` 的文本，字段如下（脚本不可用时可手工写出等价内容，并另写 `prompt.txt`）：
 
 ```text
 id=<任务ID>
-mode=A|D
-scheduler_pane=<$HERDR_PANE_ID>
+mode=A|D|watch
+scheduler_pane=<$HERDR_PANE_ID>      # watch 模式为空
 scheduler_kind=<调度者 kind>
 executor_pane=<执行者 pane>
 executor_kind=<执行者 kind>
@@ -67,28 +71,13 @@ d_kind=<kind>          # 仅 mode=D
 d_pane=<pane>          # 仅 mode=D
 result_file=<任务目录>/result.md     # 或调度者指定的路径
 done_file=<任务目录>/done
+notify_stop=1          # 可选；0 表示监视模式下目标正常停下时不弹通知，默认 1
 created=<Unix 秒>
 ```
 
-## 4. 启动 watcher
+## 4. 派发
 
-watcher 在**被守护的执行者所在的工作区、同一个 tab** 内的专用普通 pane 里运行：
-
-```bash
-herdr pane split --pane <执行者 pane> --direction down --no-focus --cwd <工作目录>
-```
-
-从返回 JSON 读新 pane 的 `pane_id`、`workspace_id`、`tab_id`，**核对后两项与执行者一致**，不一致就关闭这个新 pane 并报告。然后：
-
-```bash
-herdr pane run <watcher pane> "sh '<skill 目录>/scripts/quota-watcher.sh' --ticket '<任务目录>'"
-```
-
-注意：`herdr pane run` 会把各参数**直接用空格拼接**后交给 pane 里的 shell，不保留引号，所以要把整条命令写成**一个带引号的字符串**，路径用单引号包住；并显式用 `sh` 执行，不依赖脚本的可执行位（通过 skill manager 安装后可能丢失）。启动后用 `herdr pane read <watcher pane> --source visible --lines 10` 看一眼，确认 watcher 已打印「开始守护」，再继续。
-
-这个 pane 是普通终端，不是 agent，不消耗模型额度。
-
-## 5. 派发
+**先派发并确认执行者已经开始，再启动 watcher**（下一节）：如果 watcher 启动时执行者还是 `idle`，只能靠 `wait-settled.sh` 的 15 秒稳定窗口避免误判，执行者刚启动较慢时可能不够。
 
 发给执行者的提示词自包含（没有状态文件可读）：
 
@@ -106,7 +95,39 @@ herdr agent prompt <执行者 pane> "<上面的提示词>" --wait --until workin
 ```
 
 - `--until working` 只确认对方已开始，最多 15 秒，**不等待任务完成**；之后不要运行 `wait-settled.sh`，不要 `agent read` / `agent get` 轮询。
-- 返回 `blocked`：读对方最多 40 行交给用户。超时：`agent get` 一次确认状态后报告用户，不盲目重发。
+- 返回 `blocked`：读对方最多 40 行交给用户，**不启动 watcher**。超时：`agent get` 一次确认状态后报告用户，不盲目重发。
+
+## 5. 启动 watcher
+
+确认执行者已开始后，运行：
+
+```bash
+sh '<skill 目录>/scripts/start-watcher.sh' run "<task_dir>"
+```
+
+**这里不要加 `--require-working`**：上一步已经确认过执行者开始了，如果这时它已经很快停下（短任务已完成，或刚开始就触达额度），watcher 仍然必须启动——已有 `done` 它会立即回调，有额度文案它会去恢复。加了这个选项反而会因为「当前不是 working」而放弃守护。
+
+脚本做这些事：读 `ticket` 找到执行者；从执行者 pane 拆出一个新 pane，**核对新 pane 的工作区和 tab 与执行者一致**（不一致就关闭这个新 pane，退出码 5）；在新 pane 里运行 `quota-watcher.sh`；读屏确认出现「开始守护」才算成功，输出 `watcher_pane`。
+
+| 退出码 | 含义与处理 |
+| --- | --- |
+| 0 | 成功，继续下一步 |
+| 2 | 参数错误或任务目录里没有 `ticket` |
+| 3 | 不在 herdr 中 |
+| 4 | 执行者不存在，或不在当前工作区 |
+| 5 | 拆 pane 失败，或新 pane 的工作区、tab 不一致（已关闭新 pane）；报告用户 |
+| 6 | 只有加了 `--require-working` 才会出现：执行者当前不是 `working`。**若你已经确认过它开始**，说明它很快停下了，去掉 `--require-working` 重新运行，由 watcher 判定；若还没确认过，先确认再重试 |
+| 7 | watcher 没有确认启动（pane 保留，供查看）；读 pane 找原因，或报告用户 |
+
+`run` 只接受 `--require-working` 和 `--env`；`--notify-stop` 等写进 `ticket` 的选项要在 `init`（或 `watch`）时指定，给 `run` 会被拒绝（退出码 2）。可以用 `--env QW_GRACE=600` 这样的参数给 watcher 传环境变量（可重复，只接受 `QW_` 开头的数字参数）。`--require-working` 只用于「还没有确认过执行者已开始」的场景。
+
+手工等价写法（脚本不可用或排错时）：`herdr pane split --pane <执行者 pane> --direction down --no-focus --cwd <工作目录>`，核对新 pane 的 `workspace_id`、`tab_id` 与执行者一致，然后
+
+```bash
+herdr pane run <watcher pane> "sh '<skill 目录>/scripts/quota-watcher.sh' --ticket '<任务目录>'"
+```
+
+注意：`herdr pane run` 会把各参数**直接用空格拼接**后交给 pane 里的 shell，不保留引号，所以要把整条命令写成**一个带引号的字符串**，路径用单引号包住（因此路径里不能有单引号）；并显式用 `sh` 执行，不依赖脚本的可执行位。启动后用 `herdr pane read <watcher pane> --source visible --lines 10` 确认出现「开始守护」。这个 pane 是普通终端，不是 agent，不消耗模型额度。
 
 ## 6. 结束本轮
 
