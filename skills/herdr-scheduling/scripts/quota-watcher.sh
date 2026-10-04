@@ -7,7 +7,9 @@
 #   ticket 的可选字段 notify_stop=0：监视模式下目标正常停下（idle / done）时不弹通知（默认 1）；
 #   额度相关通知和所有异常通知（含 blocked、unknown 等需要用户处理的停下）始终发送。
 #   ticket 的可选字段 callback_on=stop（缺省 done）：派发模式下执行者稳定停在 idle / done 且不是额度原因时回调调度者，
-#   不再要求 done 文件；callback_prompt=<一行文本>：回调调度者时发送的句子（缺省「使用 $herdr-scheduling 继续调度（任务：<ID>）」）。
+#   不再要求 done 文件，但不会立即回调：先观察 QW_STOP_GRACE 秒（herdr 对某些 agent 会在运行中短暂报 done），期间 done 文件
+#   （ticket 的 done_file，路径由 start-watcher.sh 指定，执行者在结束前最后一步创建）出现就立即回调，执行者回到工作状态就继续守护；到期仍停着且没有
+#   完成标志，就通知用户并回调调度者（可能在中途提问），然后继续守护，等执行者恢复后再回调一次（至多等 QW_RESUME_MAX 秒）；callback_prompt=<一行文本>：回调调度者时发送的句子（缺省「使用 $herdr-scheduling 继续调度（任务：<ID>）」）。
 #   派发模式下执行者停在 blocked（等批准或回答，屏幕无额度文案）：通知用户一次后继续守护，等它离开 blocked，
 #   最多等 QW_BLOCK_MAX 秒；监视模式不受影响。
 # 退出码：0 正常结束；2 参数或 ticket 错误；3 已有 watcher 在守护同一目标；4 目标 pane 不可用；5 需要用户处理
@@ -17,6 +19,8 @@
 #   QW_FAR 超过则不等待的秒数(86400)  QW_PROBE_INTERVAL 探测间隔秒(1800)  QW_PROBE_MAX 探测总上限秒(43200)
 #   QW_MAX_ATTEMPTS 恢复重试上限(3)  QW_RETRIES herdr 命令瞬时失败的尝试次数(3)  QW_RETRY_DELAY 重试间隔秒(3)
 #   QW_BLOCK_MAX 派发模式下等待 blocked 被处理的上限秒数(7200)
+#   QW_STOP_GRACE stop 模式下稳定停下后等待完成标志的观察期秒数(60，0 表示不观察、立即回调)  QW_STOP_POLL 观察期轮询间隔秒(5)
+#   QW_RESUME_MAX 兜底回调之后等待执行者恢复工作的上限秒数(7200)
 #   QW_NO_USAGE=1 不做用量查询  QW_NO_CLOSE=1 结束时不关闭本 pane
 #   QP_NOW_FILE 固定当前时间的文件（测试用，此时 sleep 改为快进该文件）
 
@@ -37,13 +41,16 @@ QW_RETRY_DELAY=${QW_RETRY_DELAY:-3}
 QW_WAIT_MS=${QW_WAIT_MS:-7200000}
 QW_SETTLE_MS=${QW_SETTLE_MS:-15000}
 QW_BLOCK_MAX=${QW_BLOCK_MAX:-7200}
+QW_STOP_GRACE=${QW_STOP_GRACE:-60}
+QW_STOP_POLL=${QW_STOP_POLL:-5}
+QW_RESUME_MAX=${QW_RESUME_MAX:-7200}
 QW_NO_USAGE=${QW_NO_USAGE:-0}
 QW_NO_CLOSE=${QW_NO_CLOSE:-0}
 
 CONTINUE_TEXT='额度已恢复。如果上一项任务尚未完成，请从中断处继续；如果已完成，只回复已完成。'
 
 TICKET_DIR=; TICKET=; PLAN=; ROOT=; LOCK=
-ID=; MODE=; SCHED_PANE=; SCHED_KIND=; EXEC_PANE=; EXEC_KIND=; D_KIND=; D_PANE=; DONE_FILE=; NOTIFY_STOP=1; CALLBACK_ON=done; CALLBACK_TEXT=
+ID=; MODE=; SCHED_PANE=; SCHED_KIND=; EXEC_PANE=; EXEC_KIND=; D_KIND=; D_PANE=; DONE_FILE=; MARKER_DIR=; MARKER_CREATED=0; NOTIFY_STOP=1; CALLBACK_ON=done; CALLBACK_TEXT=
 ATTEMPTS=0
 CLS=; RESET=; RSRC=; STATE=; SCREEN=; READ_ERR=
 EVENT_RESET=; EVENT_SRC=; USAGE_TRIED=0; USAGE_RESULT=; PROBE_DEADLINE=0; EVENT_NOTIFIED=0
@@ -175,6 +182,41 @@ wait_blocked_cleared() {
     _bw=$((_bd - _bn))
     [ "$_bw" -gt "$QW_STEP" ] && _bw=$QW_STEP
     qw_sleep "$_bw"
+  done
+}
+
+# 8.1 stop 模式：稳定停下（idle / done）后没有完成标志，观察至多 QW_STOP_GRACE 秒再决定是否回调。
+# 返回 0 完成标志出现（立即回调）；1 状态不再是 idle / done（回到主循环）；2 目标 pane 不可用；3 观察期满仍停着、没有完成标志。
+wait_stop_confirm() {
+  _sd=$(( $(qp_now) + QW_STOP_GRACE ))
+  plan_write state STOP_GRACE
+  plan_write stop_deadline "$_sd"
+  while :; do
+    [ -e "$DONE_FILE" ] && return 0
+    _ss=$(agent_state_of "$EXEC_PANE") || return 2
+    case $_ss in idle | done) ;; *) return 1 ;; esac
+    _sn=$(qp_now)
+    if [ "$_sn" -ge "$_sd" ]; then qw_log "无完成标志，观察期满，按停下处理"; return 3; fi
+    _sw=$((_sd - _sn))
+    [ "$_sw" -gt "$QW_STOP_POLL" ] && _sw=$QW_STOP_POLL
+    qw_sleep "$_sw"
+  done
+}
+
+# 8.1b 兜底回调之后继续守护：等执行者恢复工作（例如用户回答了它的问题）或完成标志出现，至多 QW_RESUME_MAX 秒。
+# 返回 0 执行者回到 working / blocked；1 完成标志出现；2 目标 pane 不可用；3 超时。
+wait_resume() {
+  _rd=$(( $(qp_now) + QW_RESUME_MAX ))
+  plan_write state AFTER_FALLBACK
+  while :; do
+    [ -e "$DONE_FILE" ] && return 1
+    _rs=$(agent_state_of "$EXEC_PANE") || return 2
+    case $_rs in working | blocked) return 0 ;; esac
+    _rn2=$(qp_now)
+    [ "$_rn2" -ge "$_rd" ] && return 3
+    _rw=$((_rd - _rn2))
+    [ "$_rw" -gt "$QW_STOP_POLL" ] && _rw=$QW_STOP_POLL
+    qw_sleep "$_rw"
   done
 }
 
@@ -330,9 +372,17 @@ reassign_to_d_target() {
   return 0
 }
 
+# 回调完成后清理完成标志：只删标志目录下的标志；目录由 start-watcher.sh 创建且已空时一并删除
+cleanup_marker() {
+  [ "$MODE" != watch ] && [ -n "$MARKER_DIR" ] || return 0
+  case $DONE_FILE in "$MARKER_DIR"/*) rm -f "$DONE_FILE" ;; esac
+  [ "$MARKER_CREATED" = 1 ] && rmdir "$MARKER_DIR" 2>/dev/null
+  return 0
+}
 finish_normal() {
   plan_write state DONE
   qw_log "正常结束"
+  cleanup_marker
   release_lock
   trap - EXIT
   if [ "$QW_NO_CLOSE" != 1 ] && [ -n "${HERDR_PANE_ID:-}" ]; then
@@ -353,6 +403,7 @@ load_ticket() {
   EXEC_PANE=$(kv_get "$TICKET" executor_pane); EXEC_KIND=$(kv_get "$TICKET" executor_kind)
   D_KIND=$(kv_get "$TICKET" d_kind); D_PANE=$(kv_get "$TICKET" d_pane)
   DONE_FILE=$(kv_get "$TICKET" done_file)
+  MARKER_DIR=$(kv_get "$TICKET" marker_dir); MARKER_CREATED=$(kv_get "$TICKET" marker_dir_created)
   NOTIFY_STOP=$(kv_get "$TICKET" notify_stop)
   [ "$NOTIFY_STOP" = 0 ] || NOTIFY_STOP=1   # 缺失、为空或取值不合法一律按 1（通知）
   CALLBACK_ON=$(kv_get "$TICKET" callback_on)
@@ -435,6 +486,24 @@ main() {
           esac
         fi
         if [ "$CALLBACK_ON" = stop ] && { [ "$STATE" = idle ] || [ "$STATE" = done ]; }; then
+          if [ "$QW_STOP_GRACE" -gt 0 ] && [ ! -e "$DONE_FILE" ]; then
+            wait_stop_confirm; _sc=$?
+            case $_sc in
+              1) event_clear; SKIP_WAIT=0; continue ;;
+              2) notify_user "目标 pane 不可用" "$EXEC_PANE"; finish_abnormal "目标 pane 不可用" 4 ;;
+              3)
+                # 兜底：执行者停了但没有完成标志（可能在中途提问）。通知用户并回调调度者，然后继续守护。
+                notify_user "执行者已停下，但没有完成标志" "${EXEC_PANE}：可能在等待你回答，请去它的 pane 查看；已回调调度者，watcher 继续守护"
+                plan_write state CALLBACK
+                notify_scheduler || finish_abnormal "回调未送达" 5
+                wait_resume; _rr=$?
+                case $_rr in
+                  0 | 1) plan_write callback pending; event_clear; SKIP_WAIT=0; continue ;;
+                  2) notify_user "目标 pane 不可用" "$EXEC_PANE"; finish_abnormal "目标 pane 不可用" 4 ;;
+                  *) notify_user "执行者长时间没有恢复，已停止守护" "$EXEC_PANE 等待超过 $((QW_RESUME_MAX / 60)) 分钟"; finish_abnormal "恢复等待超时" 5 ;;
+                esac ;;
+            esac
+          fi
           plan_write state CALLBACK
           if notify_scheduler; then finish_normal; else finish_abnormal "回调未送达" 5; fi
         fi
