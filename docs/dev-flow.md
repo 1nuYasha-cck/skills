@@ -29,7 +29,7 @@
 - **不含项目信息**：skill 只规定流程和硬约束。项目路径、代码位置、检查命令、提交约定都从你项目的 `AGENTS.md` 读取，换项目、换机器、换人都不用改 skill。
 - **git 可选**：代码根是 git 仓库时评审基于 git diff、提交阶段提交代码；不是 git 仓库时用任务目录下的基线快照做评审，只登记不提交。
 - **单 agent / 多 agent**：同一个 agent 逐步推进，或多个 agent 通过 `任务状态.md` 手动接力。
-- **herdr 多 agent 调度（可选）**：在 [herdr](https://github.com/herdrdev/herdr) 中，可以把阶段派给同一工作区里另一个 pane 的 Claude 或 Codex，按阶段分工跑单步或全流程。派发、额度中断后的自动恢复和回调由 herdr-scheduling 负责：调度者派发后即结束本轮，执行者停下后由后台 watcher 唤醒调度者，等待期间不消耗 token。分工里写了 agent 的阶段一律派发到另一个 pane（即使与调度者是同一种 agent）；想让调度者在当前会话直接做的阶段，在分工里留空即可。
+- **herdr 多 agent 调度（可选）**：在 [herdr](https://github.com/herdrdev/herdr) 中，可以把阶段派给同一工作区里另一个 pane 的 Claude 或 Codex，按阶段分工跑单步或全流程。派发、额度中断后的自动恢复和回调由 herdr-scheduling 负责：调度者派发后即结束本轮，执行者停下后由后台 watcher 唤醒调度者，等待期间不消耗 token。分工里写了 agent 的阶段一律派发到另一个 pane（即使与调度者是同一种 agent）；想让调度者在当前会话直接做的阶段，在分工里留空即可。每个阶段结束时，执行者会创建一个临时完成标志（在任务目录下的 `.herdr-tmp` 里），回调即时发出；任务完成后自动清理。
 
 ## 安装
 
@@ -38,7 +38,7 @@
 ## 依赖
 
 - Git（可选）：代码根是 git 仓库时用于评审差异和提交；推送需要已配置的上游和凭据。
-- herdr 调度（可选）：需要 herdr，并在 herdr 管理的 pane 中运行（`HERDR_ENV=1`），**需要同时安装 herdr-scheduling**（建议同时安装官方 herdr skill）；未安装或版本过旧时 dev-flow 会提示安装或更新，不会自己派发。
+- herdr 调度（可选）：需要 herdr，并在 herdr 管理的 pane 中运行（`HERDR_ENV=1`），**需要同时安装 herdr-scheduling**（建议同时安装官方 herdr skill）；需要包含完成标志目录选项（`--marker-dir`）和 `whoami` 的 herdr-scheduling 版本；未安装或版本过旧时 dev-flow 会提示安装或更新，不会自己派发。
 
 ## 在项目 AGENTS.md 中声明项目信息
 
