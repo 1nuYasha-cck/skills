@@ -60,10 +60,10 @@ sh '<skill 目录>/scripts/start-watcher.sh' dispatch --executor <执行者 pane
 1. 校验参数，在 `${TMPDIR:-/tmp}/herdr-scheduling/<任务ID>/` 下建任务目录并写 `ticket`（不写入使用者的项目）；
 2. 组装完整提示词，写入 `prompt.txt`（保存的就是实际发出的内容）；
 3. `herdr agent prompt <执行者> <提示词> --wait --until working --until blocked --timeout 15000`，再读一次状态确认；
-   （`herdr agent prompt` 成功返回就表示已观察到执行者开始；之后它即使很快做完、读到 `idle`，也算已开始，照常进入第 4 步。）
-4. 从执行者 pane 拆出一个新 pane，**核对新 pane 的工作区和 tab 与执行者一致**（不一致就关闭这个新 pane，退出码 5），在里面运行 `quota-watcher.sh`，读屏确认出现「开始守护」。**这里不带 `--require-working`**：第 3 步已经确认过执行者开始，它随后很快停下（短任务已完成，或刚开始就触达额度）时，watcher 仍必须启动——已有 `done` 它会立即回调，有额度文案它会去恢复。
+   （`herdr agent prompt` 成功返回就表示已观察到执行者开始；之后它即使很快做完、读到 `idle`，也算已开始，照常进入第 4 步。若它返回 `agent_prompt_stalled`——herdr 已接受提示词但 5 秒内没观察到 `working`/`blocked`——视为「已送达、未确认」：不重发，同样进入第 4 步，成功时输出多一行 `start_confirmed=no`。其他失败退出码 9，不进入第 4 步。）
+4. 从执行者 pane 拆出一个新 pane，**核对新 pane 的工作区和 tab 与执行者一致**（不一致就关闭这个新 pane，退出码 5），在里面运行 `quota-watcher.sh`，确认已启动：屏幕出现「开始守护」，或任务目录 `plan` 里的 `watcher_pane` 等于这个新 pane（最多等 `SW_CONFIRM_TRIES` 次，缺省 20，每次 1 秒）。**这里不带 `--require-working`**：第 3 步已经确认过执行者开始，它随后很快停下（短任务已完成，或刚开始就触达额度）时，watcher 仍必须启动——已有 `done` 它会立即回调，有额度文案它会去恢复。
 
-成功时输出五行 `键=值`：`task_id`、`task_dir`、`result_file`、`done_file`、`watcher_pane`。
+成功时输出五行 `键=值`：`task_id`、`task_dir`、`result_file`、`done_file`、`watcher_pane`；「已送达、未确认」时再多一行 `start_confirmed=no`。
 
 ### 选项
 
@@ -94,14 +94,14 @@ sh '<skill 目录>/scripts/start-watcher.sh' dispatch --executor <执行者 pane
 
 | 退出码 | 含义与处理 |
 | --- | --- |
-| 0 | 成功，继续第 4 节 |
+| 0 | 成功，继续第 4 节。输出里若多一行 `start_confirmed=no`：herdr 已接受提示词，但 5 秒内没有观察到执行者开始工作（`agent_prompt_stalled`；herdr 对 Codex 可能持续报 `idle`），**watcher 已照常启动**，不要重发提示词；在报告里如实说明「没有观察到执行者开始，watcher 已启动；它若其实没有在工作，约 75 秒后会通知并回调」 |
 | 2 | 参数错误（含提示词为空、选项值不合法、选项对 `dispatch` 无效） |
 | 3 | 不在 herdr 中，或 `HERDR_PANE_ID` 指向不存在的 pane / 其他工作区，或 Codex 里环境变量过期而无法唯一确定调度者的真实 pane（见第 1 节；用 `codex --no-daemon` 启动，或由用户给出真实值） |
 | 4 | 执行者不存在，或不在当前工作区 |
 | 5 | 拆 pane 失败，或新 pane 的工作区、tab 不一致（已关闭新 pane）。**提示词已送达、执行者正在工作，但 watcher 没有启动**；任务目录保留，排除问题后用 `run <任务目录>` 重试（第 7 节），不要重发提示词 |
-| 7 | watcher 没有确认启动（pane 保留，供查看）；同样提示词已送达，读 pane 找原因，或用 `run` 重试 |
+| 7 | watcher 没有确认启动（pane 保留，供查看）；同样提示词已送达。先看任务目录的 `plan` 里有没有 `watcher_pane`（有说明 watcher 其实起来了，只是确认超时，不要重复启动），再读 pane 找原因，或用 `run` 重试 |
 | 8 | 执行者被阻塞（等批准或回答）：目标本来就是 `blocked` 时提示词没有送达，送达后才进入 `blocked` 时已送达；**没有启动 watcher**。读执行者最多 40 行交给用户，不要自己批准 |
-| 9 | 没有确认执行者开始工作（`herdr agent prompt` 返回 `agent_prompt_stalled`、超时等错误，且随后读到的状态不是 `working`）：提示词可能已送达，**没有启动 watcher，不要盲目重发**；`agent read` 看一眼屏幕再报告用户 |
+| 9 | 没有确认执行者开始工作，且 `herdr agent prompt` 返回的**不是** `agent_prompt_stalled`（超时、其他错误，随后读到的状态也不是 `working`）：提示词可能已送达，**没有启动 watcher，不要盲目重发**；`agent read` 看一眼屏幕再报告用户。`agent_prompt_stalled`（herdr 文档：提交已被接受，但 5 秒内没观察到 `working`/`blocked`）不走这一行，见退出码 0 的 `start_confirmed=no` |
 
 退出码 5、7、8、9 时任务目录都保留，输出里有 `task_dir`。
 
@@ -155,7 +155,7 @@ sh '<skill 目录>/scripts/start-watcher.sh' init --mode A --executor <执行者
 herdr agent prompt <执行者 pane> "<提示词>" --wait --until working --until blocked --timeout 15000
 ```
 
-`--until working` 只确认对方已开始，最多 15 秒，**不等待任务完成**；之后不要运行 `wait-settled.sh`，不要 `agent read` / `agent get` 轮询。返回 `blocked`：读对方最多 40 行交给用户，**不启动 watcher**。超时：`agent get` 一次确认状态后报告用户，不盲目重发。
+`--until working` 只确认对方已开始，最多 15 秒（herdr 自己对「提交后观察 `working`/`blocked`」的窗口是 5 秒，超过返回 `agent_prompt_stalled`，脚本把它当作已送达、未确认，仍启动 watcher），**不等待任务完成**；之后不要运行 `wait-settled.sh`，不要 `agent read` / `agent get` 轮询。返回 `blocked`：读对方最多 40 行交给用户，**不启动 watcher**。超时：`agent get` 一次确认状态后报告用户，不盲目重发。
 
 ### 7.3 `run`：启动 watcher
 
