@@ -16,7 +16,7 @@ herdr 命令的语法和安全规则以已安装的官方 herdr skill 和 `herdr
 
 ## 前置检查
 
-`test "${HERDR_ENV:-}" = 1`，且 `$HERDR_PANE_ID`、`$HERDR_WORKSPACE_ID` 非空；不满足就说明不在 herdr 中并停止。
+`test "${HERDR_ENV:-}" = 1`，且 `$HERDR_PANE_ID`、`$HERDR_WORKSPACE_ID` 非空；不满足就说明不在 herdr 中并停止。并核对 `$HERDR_PANE_ID` 有效：`herdr pane get "$HERDR_PANE_ID"` 能取到，且它的工作区等于 `$HERDR_WORKSPACE_ID`。取不到或不一致说明环境变量已过期（例如 Codex 的 app-server 守护进程在更早的 herdr pane 里启动，经它启动的 Codex agent 都继承了它的旧环境）：说明原因并停止，**不要用猜测或手填的 pane ID 继续**；处理办法是重启 Codex 的 app-server，或由用户给出真实的 pane、工作区、tab，用 `HERDR_PANE_ID=… HERDR_WORKSPACE_ID=… HERDR_TAB_ID=…` 作为前缀运行。`start-watcher.sh` 会做同样的核对并以退出码 3 结束。
 
 ## 选择入口
 

@@ -8,7 +8,7 @@
 
 ## 1. 前置检查
 
-1. `test "${HERDR_ENV:-}" = 1`，且 `$HERDR_PANE_ID`、`$HERDR_WORKSPACE_ID` 非空；否则说明不在 herdr 中并停止。
+1. `test "${HERDR_ENV:-}" = 1`，且 `$HERDR_PANE_ID`、`$HERDR_WORKSPACE_ID` 非空；否则说明不在 herdr 中并停止。并核对 `$HERDR_PANE_ID` 有效：`herdr pane get "$HERDR_PANE_ID"` 能取到，且它的工作区等于 `$HERDR_WORKSPACE_ID`。取不到或不一致说明环境变量已过期（例如 Codex 的 app-server 守护进程在更早的 herdr pane 里启动，经它启动的 Codex agent 都继承了它的旧环境）：说明原因并停止，**不要用猜测或手填的 pane ID 继续**；处理办法是重启 Codex 的 app-server，或由用户给出真实的 pane、工作区、tab，用 `HERDR_PANE_ID=… HERDR_WORKSPACE_ID=… HERDR_TAB_ID=…` 作为前缀运行。`start-watcher.sh` 会做同样的核对并以退出码 3 结束。
 2. **分工必须明确**。同时具备下面三项才继续，缺任何一项就**停下询问**，不要猜：
    - 执行者的 kind（如 `claude`、`codex`）；
    - 要执行的任务内容；
@@ -69,6 +69,7 @@ sh '<skill 目录>/scripts/start-watcher.sh' dispatch --executor <执行者 pane
 | `--callback-on done\|stop` | 何时回调调度者，缺省 `done`，见下 |
 | `--callback-prompt <文本>` | 回调时发给调度者的一行文本，缺省「使用 $herdr-scheduling 继续调度（任务：<任务ID>）」；不能以 `-` 开头，最长 500 字符 |
 | `--result-file <路径>` | 结果文件路径，缺省为任务目录下的 `result.md` |
+| `--marker-dir <绝对路径>` | 完成标志所在的目录，缺省 `<执行者工作目录>/.herdr-scheduling-tmp`（取不到工作目录或不可写时退回任务目录）。**标志文件的路径由脚本决定**：`<该目录>/<任务ID>.done`，每次派发都是新文件；目录不存在时脚本创建。执行者在结束前最后一步创建它，watcher 一看到就**立即回调**，回调后删除它（目录由脚本创建且已空时一并删除）。必须是绝对路径；不接受 `watch`、`run` |
 | `--mode D --d-pane <pane> --d-kind <kind>` | 方案 D：额度中断时改派给这个已有 pane |
 | `--env QW_X=N` | 给 watcher 传环境变量（可重复，只接受 `QW_` 开头的数字参数） |
 
@@ -77,7 +78,12 @@ sh '<skill 目录>/scripts/start-watcher.sh' dispatch --executor <执行者 pane
 ### 两种回调条件
 
 - **`--callback-on done`（缺省）**：脚本在提示词后追加「把结果写到 <result_file>；创建文件 <done_file>；不需要自己通知调度者，由 watcher 负责」，watcher 发现 `done` 文件才回调。适合没有别的交接手段的任务。
-- **`--callback-on stop`**：提示词原样发送，不追加样板；执行者稳定停在 `idle`/`done` 且不是额度原因，watcher 就回调调度者，由调度者读调用方自己的状态文件判断结果。适合执行者靠状态文件交接的流程（见 integration.md）。执行者停在 `blocked`、`unknown` 等状态时**不回调**，见 quota-recovery.md 第 2 节。
+- **`--callback-on stop`**：提示词后只追加一句「完成后的最后一步：创建空文件 <完成标志>；中途停下提问时不要创建」，不追加结果文件的样板；适合执行者靠状态文件交接的流程（见 integration.md）。执行者稳定停在 `idle`/`done` 且不是额度原因时，watcher **不会立即回调**，因为 herdr 对某些 agent（实测 Codex）会在运行中短暂报 `idle`/`done`：
+  - 完成标志已存在或在观察期内出现 → 立即回调；
+  - 观察期（`QW_STOP_GRACE`，缺省 60 秒）内执行者回到 `working`/`blocked` → 继续守护；
+  - 观察期满仍停着、没有标志（常见原因：执行者在中途向你提问）→ **同时**通知你「执行者已停下，但没有完成标志」并回调调度者，由调度者读调用方的状态判断；之后 watcher **继续守护**，执行者恢复工作（例如你回答了问题）并最终做完后，再回调一次（至多等 `QW_RESUME_MAX`，缺省 7200 秒）；
+  - `QW_STOP_GRACE=0` 恢复「稳定停下就立即回调」。
+  完成标志由脚本追加的那句话让执行者创建，否则每次回调都要晚一个观察期。执行者停在 `blocked`、`unknown` 等状态时**不回调**，见 quota-recovery.md 第 2 节。
 
 ### 退出码
 
@@ -85,7 +91,7 @@ sh '<skill 目录>/scripts/start-watcher.sh' dispatch --executor <执行者 pane
 | --- | --- |
 | 0 | 成功，继续第 4 节 |
 | 2 | 参数错误（含提示词为空、选项值不合法、选项对 `dispatch` 无效） |
-| 3 | 不在 herdr 中 |
+| 3 | 不在 herdr 中，或 `HERDR_PANE_ID` 指向不存在的 pane / 其他工作区（环境变量可能已过期，见第 1 节） |
 | 4 | 执行者不存在，或不在当前工作区 |
 | 5 | 拆 pane 失败，或新 pane 的工作区、tab 不一致（已关闭新 pane）。**提示词已送达、执行者正在工作，但 watcher 没有启动**；任务目录保留，排除问题后用 `run <任务目录>` 重试（第 7 节），不要重发提示词 |
 | 7 | watcher 没有确认启动（pane 保留，供查看）；同样提示词已送达，读 pane 找原因，或用 `run` 重试 |
@@ -194,7 +200,9 @@ tab_id=<执行者 pane 的 tab>
 d_kind=<kind>          # 仅 mode=D
 d_pane=<pane>          # 仅 mode=D
 result_file=<任务目录>/result.md     # 或调度者指定的路径
-done_file=<任务目录>/done
+done_file=<标志目录>/<任务ID>.done  # mode=A|D；监视模式和取不到标志目录时为 <任务目录>/done
+marker_dir=<标志目录>              # 可选，仅 mode=A|D
+marker_dir_created=1|0             # 可选；1 表示目录由脚本创建，回调后为空时删除
 notify_stop=1          # 可选；0 表示监视模式下目标正常停下时不弹通知，默认 1
 callback_on=done|stop  # 可选，仅 mode=A|D；缺省 done
 callback_prompt=<一行文本>  # 可选，仅 mode=A|D；缺省「使用 $herdr-scheduling 继续调度（任务：<ID>）」
