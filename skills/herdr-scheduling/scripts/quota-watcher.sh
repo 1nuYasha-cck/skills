@@ -3,7 +3,9 @@
 # 纯 shell，不消耗模型额度；应在专用的普通 pane 里运行（见 references/quota-recovery.md）。
 #
 # 用法：quota-watcher.sh --ticket <任务目录>
-#   任务目录由调度者按 references/dispatch.md 创建，内含 ticket（必需）、prompt.txt、plan、done 等。
+#   任务目录由调度者按 references/dispatch.md 创建（推荐用 start-watcher.sh），内含 ticket（必需）、prompt.txt、plan、done 等。
+#   ticket 的可选字段 notify_stop=0：监视模式下目标正常停下（idle / done）时不弹通知（默认 1）；
+#   额度相关通知和所有异常通知（含 blocked、unknown 等需要用户处理的停下）始终发送。
 # 退出码：0 正常结束；2 参数或 ticket 错误；3 已有 watcher 在守护同一目标；4 目标 pane 不可用；5 需要用户处理
 #
 # 可用环境变量（默认值适合真实使用，测试时可缩小）：
@@ -35,7 +37,7 @@ QW_NO_CLOSE=${QW_NO_CLOSE:-0}
 CONTINUE_TEXT='额度已恢复。如果上一项任务尚未完成，请从中断处继续；如果已完成，只回复已完成。'
 
 TICKET_DIR=; TICKET=; PLAN=; ROOT=; LOCK=
-ID=; MODE=; SCHED_PANE=; SCHED_KIND=; EXEC_PANE=; EXEC_KIND=; D_KIND=; D_PANE=; DONE_FILE=
+ID=; MODE=; SCHED_PANE=; SCHED_KIND=; EXEC_PANE=; EXEC_KIND=; D_KIND=; D_PANE=; DONE_FILE=; NOTIFY_STOP=1
 ATTEMPTS=0
 CLS=; RESET=; RSRC=; STATE=
 EVENT_RESET=; EVENT_SRC=; USAGE_TRIED=0; USAGE_RESULT=; PROBE_DEADLINE=0; EVENT_NOTIFIED=0
@@ -296,6 +298,8 @@ load_ticket() {
   EXEC_PANE=$(kv_get "$TICKET" executor_pane); EXEC_KIND=$(kv_get "$TICKET" executor_kind)
   D_KIND=$(kv_get "$TICKET" d_kind); D_PANE=$(kv_get "$TICKET" d_pane)
   DONE_FILE=$(kv_get "$TICKET" done_file)
+  NOTIFY_STOP=$(kv_get "$TICKET" notify_stop)
+  [ "$NOTIFY_STOP" = 0 ] || NOTIFY_STOP=1   # 缺失、为空或取值不合法一律按 1（通知）
   [ -n "$ID" ] && [ -n "$EXEC_PANE" ] && [ -n "$EXEC_KIND" ] || return 1
   case $MODE in A | D | watch) ;; *) return 1 ;; esac
   [ -n "$DONE_FILE" ] || DONE_FILE="$TICKET_DIR/done"
@@ -350,7 +354,14 @@ main() {
       NONE)
         event_clear
         if [ "$MODE" = watch ]; then
-          notify_user "目标已停下，原因不是额度" "$EXEC_PANE 状态 $STATE"
+          # 只有「监视模式下正常停下」（idle / done）可以静音；blocked（等批准或回答）、unknown 等
+          # 需要用户处理的停下始终通知，否则 watcher 退出后就没有任何东西在盯着它了。
+          if [ "$NOTIFY_STOP" = 0 ] && { [ "$STATE" = idle ] || [ "$STATE" = done ]; }; then
+            qw_log "目标已停下，原因不是额度（notify_stop=0，不弹通知）：${EXEC_PANE} 状态 ${STATE}"
+            plan_write last_notice "目标已停下（静音）"
+          else
+            notify_user "目标已停下，原因不是额度" "$EXEC_PANE 状态 $STATE"
+          fi
           finish_normal
         fi
         notify_user "执行者已停下，但没有完成标志，原因不是额度" "$EXEC_PANE 状态 ${STATE}，请查看（提问、被打断或崩溃）"
