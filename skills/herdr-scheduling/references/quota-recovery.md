@@ -50,7 +50,7 @@ herdr 命令（`agent get`、`agent read`）瞬时失败时最多尝试 3 次，
 
 `blocked` 只在派发模式下继续守护（用户在执行者 pane 里批准或回答后，watcher 不丢）；监视模式下 `blocked` 仍是通知后正常结束。屏幕上有额度文案的 `blocked`（如额度菜单）不走这条，走额度流程。`blocked` 等待用 `herdr agent get` 每 `QW_STEP`（60 秒）查一次，不耗模型额度。
 
-判定依据：`herdr agent get` 的状态；`herdr agent read --source recent-unwrapped` 只匹配**末尾 15 行**；状态为 `unknown` 时一律读屏幕再判。herdr 没有额度专用状态，所以额度中断只能靠屏幕文案判定，规则见 `quota-patterns.md`。
+判定依据：`herdr agent get` 的状态；读屏只匹配**末尾 15 行**；状态为 `unknown` 时一律读屏幕再判。**读屏来源按状态选**：`blocked` 读 `--source visible`，其他状态读 `--source recent-unwrapped`——herdr 在 agent 处于 `working` 或 `blocked`（界面使用备用屏幕）时拒绝 `recent-unwrapped`，返回 `agent_not_idle`，而 `visible` 始终可读。遇到 `agent_not_idle` 时先重新取状态：已回到 `working` 就继续等待（不算错误），否则改读 `visible` 重试；其他读屏失败重试 `QW_RETRIES` 次，仍失败就通知用户（通知里带 herdr 的错误原文）并以退出码 4 结束。herdr 没有额度专用状态，所以额度中断只能靠屏幕文案判定，规则见 `quota-patterns.md`。
 
 ## 3. 恢复时间的来源（按优先级）
 
@@ -98,5 +98,6 @@ herdr 命令（`agent get`、`agent read`）瞬时失败时最多尝试 3 次，
 - 真实额度耗尽下的行为**未实测**：额度期间 herdr 对 Claude 标记的状态、Codex 额度耗尽后会话能否输入、限额状态下 `claude -p "/usage"` 和新开的 Codex 会话能否正常工作，都未验证。测试用桩 herdr 和模拟文案覆盖了状态机的所有分支。
 - 恢复时间未知且屏幕上的旧额度文案一直留着时，watcher 无法判断额度是否已恢复，会探测到 12 小时上限后通知用户。
 - 派发模式下 `blocked`（等批准或回答）后继续守护的行为只用桩 herdr 验证：真实 agent 的审批提示能否被 herdr 稳定标记为 `blocked`、批准后状态变化的时序，以及最长 `QW_BLOCK_MAX` 的等待在真机上的表现，均未验证。
+- 读屏降级到 `visible` 时只含当前可见屏幕，历史行比 `recent-unwrapped` 少；`blocked` 时审批提示和额度菜单都在可见区域内，判定足够。`agent_not_idle` 已在 Claude 执行者上实测（`working` 和 `blocked` 都触发）；Codex 在这两种状态下的读屏行为未实测，但处理逻辑不依赖 agent 种类。
 - 休眠期间的行为未实测；等待用分段 `sleep` 并对比时间戳，唤醒后会自我纠正。
 - GNU `date` 的分支只做了逻辑验证，没有在真实 GNU 环境验证。
