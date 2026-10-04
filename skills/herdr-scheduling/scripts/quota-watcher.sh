@@ -45,7 +45,7 @@ CONTINUE_TEXT='额度已恢复。如果上一项任务尚未完成，请从中�
 TICKET_DIR=; TICKET=; PLAN=; ROOT=; LOCK=
 ID=; MODE=; SCHED_PANE=; SCHED_KIND=; EXEC_PANE=; EXEC_KIND=; D_KIND=; D_PANE=; DONE_FILE=; NOTIFY_STOP=1; CALLBACK_ON=done; CALLBACK_TEXT=
 ATTEMPTS=0
-CLS=; RESET=; RSRC=; STATE=
+CLS=; RESET=; RSRC=; STATE=; SCREEN=; READ_ERR=
 EVENT_RESET=; EVENT_SRC=; USAGE_TRIED=0; USAGE_RESULT=; PROBE_DEADLINE=0; EVENT_NOTIFIED=0
 
 qw_log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
@@ -230,15 +230,47 @@ query_usage() {
 
 event_clear() { EVENT_RESET=; EVENT_SRC=; USAGE_TRIED=0; PROBE_DEADLINE=0; EVENT_NOTIFIED=0; }
 
+# 读取执行者屏幕末尾 40 行：文本放在 SCREEN，失败时 herdr 的错误原文（截断）放在 READ_ERR。
+# herdr 在 agent 处于 working 或 blocked（界面使用备用屏幕）时拒绝 recent-unwrapped，返回 agent_not_idle，
+# 而 visible 始终可读；所以 blocked 直接读 visible，其他状态读 recent-unwrapped。遇到 agent_not_idle 时先重新取状态：
+# 已回到 working 就不是错误（返回 2，调用者继续等待），否则改读 visible 立即重试。
+# 返回 0 成功；1 失败（用尽 QW_RETRIES 次）；2 读屏时发现执行者回到了 working。可能更新 STATE。
+read_screen() {
+  SCREEN=; READ_ERR=
+  _rsrc=recent-unwrapped
+  [ "$STATE" = blocked ] && _rsrc=visible
+  _rn=0; _re="$ROOT/.read-err.$$"
+  while [ "$_rn" -lt "$QW_RETRIES" ]; do
+    if SCREEN=$(herdr agent read "$EXEC_PANE" --source "$_rsrc" --lines 40 2>"$_re"); then rm -f "$_re"; return 0; fi
+    SCREEN=
+    READ_ERR=$(tr '\n' ' ' <"$_re" 2>/dev/null | cut -c1-200)
+    _rn=$((_rn + 1))
+    case $READ_ERR in
+      *agent_not_idle*)
+        _ns=$(agent_state_of "$EXEC_PANE") || _ns=
+        if [ "$_ns" = working ]; then rm -f "$_re"; READ_ERR=; qw_log "读屏时 ${EXEC_PANE} 回到了 working，继续等待"; return 2; fi
+        [ -z "$_ns" ] || STATE=$_ns
+        _rsrc=visible ;;
+      *) [ "$_rn" -lt "$QW_RETRIES" ] && qw_sleep "$QW_RETRY_DELAY" ;;
+    esac
+  done
+  rm -f "$_re"
+  return 1
+}
+
 # 8.10 读取目标状态和屏幕，给出分类和恢复时间。
 # 设置 CLS（ERROR|WORKING|NONE|LIMIT_UNTIMED|LIMIT_TIMED|CLAUDE_AUTO|LIMIT_NO_TIME）、RESET、RSRC、STATE。
 # 同一限额事件内沿用第一次解析出的恢复时间：到点后屏幕上的旧文案再解析，「当天时刻」会被当成次日。
 classify_target() {
-  CLS=NONE; RESET=; RSRC=unknown
+  CLS=NONE; RESET=; RSRC=unknown; READ_ERR=
   STATE=$(agent_state_of "$EXEC_PANE") || { CLS=ERROR; return 0; }
   if [ "$STATE" = working ]; then CLS=WORKING; return 0; fi
-  _cs=$(qw_retry "$QW_RETRIES" "$QW_RETRY_DELAY" herdr agent read "$EXEC_PANE" --source recent-unwrapped --lines 40) || { CLS=ERROR; return 0; }
-  _ct=$(printf '%s\n' "$_cs" | qp_tail 15)
+  read_screen; _rr=$?
+  case $_rr in
+    1) CLS=ERROR; return 0 ;;
+    2) CLS=WORKING; return 0 ;;
+  esac
+  _ct=$(printf '%s\n' "$SCREEN" | qp_tail 15)
   CLS=$(printf '%s\n' "$_ct" | qp_classify "$EXEC_KIND")
   case $CLS in
     LIMIT_TIMED | CLAUDE_AUTO | LIMIT_NO_TIME)
@@ -376,7 +408,7 @@ main() {
 
     classify_target
     case $CLS in
-      ERROR) notify_user "读取目标失败" "$EXEC_PANE"; finish_abnormal "读取目标失败" 4 ;;
+      ERROR) notify_user "读取目标失败" "${EXEC_PANE}：${READ_ERR:-无错误输出}"; finish_abnormal "读取目标失败" 4 ;;
       WORKING) event_clear; continue ;;
       NONE)
         event_clear
