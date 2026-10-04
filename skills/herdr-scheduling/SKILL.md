@@ -16,7 +16,9 @@ herdr 命令的语法和安全规则以已安装的官方 herdr skill 和 `herdr
 
 ## 前置检查
 
-`test "${HERDR_ENV:-}" = 1`，且 `$HERDR_PANE_ID`、`$HERDR_WORKSPACE_ID` 非空；不满足就说明不在 herdr 中并停止。并核对 `$HERDR_PANE_ID` 有效：`herdr pane get "$HERDR_PANE_ID"` 能取到，且它的工作区等于 `$HERDR_WORKSPACE_ID`。取不到或不一致说明环境变量已过期（例如 Codex 的 app-server 守护进程在更早的 herdr pane 里启动，经它启动的 Codex agent 都继承了它的旧环境）：说明原因并停止，**不要用猜测或手填的 pane ID 继续**；处理办法是重启 Codex 的 app-server，或由用户给出真实的 pane、工作区、tab，用 `HERDR_PANE_ID=… HERDR_WORKSPACE_ID=… HERDR_TAB_ID=…` 作为前缀运行。`start-watcher.sh` 会做同样的核对并以退出码 3 结束。
+`test "${HERDR_ENV:-}" = 1`，且 `$HERDR_PANE_ID`、`$HERDR_WORKSPACE_ID` 非空；不满足就说明不在 herdr 中并停止。
+
+**取得调度者自己的 pane、工作区、tab**：运行 `sh '<skill 目录>/scripts/start-watcher.sh' whoami`，输出 `pane_id`、`workspace_id`、`tab_id`、`source` 四行；本 skill 里写的 `$HERDR_PANE_ID`、`$HERDR_WORKSPACE_ID`、`$HERDR_TAB_ID` 一律指这几个值。环境变量有效时它们就是环境变量（`source=env`）；在 Codex 里（环境有 `CODEX_THREAD_ID`），共享的 app-server 守护进程可能带来**过期的旧值**，此时 `whoami` 会按类型、工作目录和状态自动找到真实的 pane（`source=discovered`），**只在唯一匹配时采用**。无法唯一确定（退出码 3）就说明原因并停止，**不要用猜测或手填的 pane ID 继续**；让用户用 `codex --no-daemon` 启动 Codex（根治；herdr 里是 `herdr agent start … --kind codex --pane … -- --no-daemon`），或由用户给出真实的 pane、工作区、tab，用 `HERDR_PANE_ID=… HERDR_WORKSPACE_ID=… HERDR_TAB_ID=…` 作为前缀运行。`start-watcher.sh` 的其他子命令会做同样的核对和发现，并把 `--scheduler` 里过期的环境变量值替换为发现的 pane。
 
 ## 选择入口
 
@@ -47,7 +49,7 @@ herdr 命令的语法和安全规则以已安装的官方 herdr skill 和 `herdr
 | --- | --- |
 | `quota-watcher.sh` | watcher 主程序：`quota-watcher.sh --ticket <任务目录>`，应在专用 pane 里运行 |
 | `quota-lib.sh` | 额度文案分类、时间解析、状态栏和用量输出解析的纯函数 |
-| `start-watcher.sh` | 启动辅助：`dispatch`（建任务目录、发提示词并确认开始、启动 watcher，派发入口和调用接口用这一条）、`init`（只建任务目录和 `ticket`）、`run <任务目录>`（拆 pane、核对、启动 watcher、确认）、`watch`（监视入口一条命令）；退出码见 `dispatch.md` 第 3、7 节 |
+| `start-watcher.sh` | 启动辅助：`dispatch`（建任务目录、发提示词并确认开始、启动 watcher，派发入口和调用接口用这一条）、`whoami`（输出调度者自己的权威 pane、工作区、tab；Codex 里环境变量过期时自动发现）、`init`（只建任务目录和 `ticket`）、`run <任务目录>`（拆 pane、核对、启动 watcher、确认）、`watch`（监视入口一条命令）；退出码见 `dispatch.md` 第 3、7 节 |
 | `wait-settled.sh` | 等 agent 稳定地进入 idle / done / blocked，过滤掉对话中途的短暂误报 |
 
 均为 POSIX sh，不依赖 `jq`、`python3`。运行时数据在 `${TMPDIR:-/tmp}/herdr-scheduling/` 下，不写入使用者的项目。
