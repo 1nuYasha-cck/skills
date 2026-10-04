@@ -29,7 +29,7 @@
 - **不含项目信息**：skill 只规定流程和硬约束。项目路径、代码位置、检查命令、提交约定都从你项目的 `AGENTS.md` 读取，换项目、换机器、换人都不用改 skill。
 - **git 可选**：代码根是 git 仓库时评审基于 git diff、提交阶段提交代码；不是 git 仓库时用任务目录下的基线快照做评审，只登记不提交。
 - **单 agent / 多 agent**：同一个 agent 逐步推进，或多个 agent 通过 `任务状态.md` 手动接力。
-- **herdr 多 agent 调度（可选）**：在 [herdr](https://github.com/herdrdev/herdr) 中，可以把下一步派给同一工作区的 Claude 或 Codex，按阶段分工跑单步或全流程。调度者派发后即结束本轮，由被派发的 agent 完成后回调唤醒，等待期间不消耗 token。
+- **herdr 多 agent 调度（可选）**：在 [herdr](https://github.com/herdrdev/herdr) 中，可以把阶段派给同一工作区里另一个 pane 的 Claude 或 Codex，按阶段分工跑单步或全流程。派发、额度中断后的自动恢复和回调由 herdr-scheduling 负责：调度者派发后即结束本轮，执行者停下后由后台 watcher 唤醒调度者，等待期间不消耗 token。分工里写了 agent 的阶段一律派发到另一个 pane（即使与调度者是同一种 agent）；想让调度者在当前会话直接做的阶段，在分工里留空即可。
 
 ## 安装
 
@@ -38,7 +38,7 @@
 ## 依赖
 
 - Git（可选）：代码根是 git 仓库时用于评审差异和提交；推送需要已配置的上游和凭据。
-- herdr 调度（可选）：需要 herdr，并在 herdr 管理的 pane 中运行（`HERDR_ENV=1`），建议同时安装 herdr skill。回调等待脚本 `scripts/wait-settled.sh` 随本 skill 提供。
+- herdr 调度（可选）：需要 herdr，并在 herdr 管理的 pane 中运行（`HERDR_ENV=1`），**需要同时安装 herdr-scheduling**（建议同时安装官方 herdr skill）；未安装或版本过旧时 dev-flow 会提示安装或更新，不会自己派发。
 
 ## 在项目 AGENTS.md 中声明项目信息
 
@@ -112,9 +112,8 @@ Codex 中也可以用 `$dev-flow` 显式调用，例如「使用 $dev-flow 完�
 | `skills/dev-flow/SKILL.md` | 目录约定、项目信息来源、运行流程、全局硬约束 |
 | `skills/dev-flow/references/stage-*.md` | 六个阶段的工作流、边界和停止条件（每阶段一个文件） |
 | `skills/dev-flow/references/state-file.md` | `任务状态.md` 的字段、状态迁移、确认门禁和一致性规则 |
-| `skills/dev-flow/references/orchestration-herdr.md` | herdr 调度与回调 |
+| `skills/dev-flow/references/orchestration-herdr.md` | herdr 调度（调用 herdr-scheduling） |
 | `skills/dev-flow/assets/` | 各阶段文档模板 |
-| `skills/dev-flow/scripts/wait-settled.sh` | herdr 回调等待脚本 |
 | `skills/dev-flow/agents/openai.yaml` | Codex 界面显示信息 |
 
 ## 许可证
