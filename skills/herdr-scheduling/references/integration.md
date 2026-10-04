@@ -16,12 +16,12 @@
 
 ## 2. 调用步骤（调度者侧）
 
-1. **前置检查和选择执行者 pane**：按 [dispatch.md](dispatch.md) 第 1–2 节（调用方引用它，不复制）。执行者永远是另一个 pane，只在调度者所在的工作区内选；脚本会拒绝把调度者自己或当前 pane 当作执行者（退出码 2，不发送）。
+1. **前置检查和选择执行者 pane**：按 [dispatch.md](dispatch.md) 第 1–2 节（调用方引用它，不复制）。其中先运行 `start-watcher.sh whoami` 取得调度者自己的权威 pane、工作区、tab（Codex 里环境变量可能过期，它会自动发现），后面的 `$HERDR_PANE_ID`、`--scheduler` 的值，以及调用方写进自己状态文件的「调度者 pane」，都用它的输出，不要直接用环境变量。执行者永远是另一个 pane，只在调度者所在的工作区内选；脚本会拒绝把调度者自己或当前 pane 当作执行者（退出码 2，不发送）。
 2. **一条命令派发并启动 watcher**：
 
    ```bash
    sh '<skill 目录>/scripts/start-watcher.sh' dispatch \
-     --executor <执行者 pane> --scheduler "$HERDR_PANE_ID" --scheduler-kind <调度者 kind> \
+     --executor <执行者 pane> --scheduler "<whoami 的 pane_id>" --scheduler-kind <调度者 kind> \
      --prompt '<调用方给执行者的提示词>' \
      --callback-on stop \
      --callback-prompt '<回调时发给调度者的一行文本，例如：使用 $<调用方> 继续调度（任务：<任务标识>）'
@@ -39,7 +39,7 @@
    | 退出码 | 调用方怎么做 |
    | --- | --- |
    | 0 | 记录派发（任务目录、`watcher_pane`），向用户报告，结束本轮 |
-   | 3 | `HERDR_PANE_ID` 无效或不在当前工作区：环境变量可能已过期（例如 Codex 的 app-server 守护进程继承了旧环境），说明原因，按提示处理后重试，不要用手填的 pane ID 继续 |
+   | 3 | 不在 herdr 中，或无法确定调度者自己的 pane：`HERDR_PANE_ID` 无效或不在当前工作区，Codex 里还可能是共享 app-server 守护进程带来的旧值，且自动发现没有唯一匹配。说明原因，按提示处理（用 `codex --no-daemon` 启动，或由用户给出真实值）后重试，不要用手填的 pane ID 继续 |
 | 8 | 执行者被阻塞（在等批准或回答）：不启动 watcher；读它最多 40 行交给用户，不要自己批准 |
    | 9 | 没有确认开始：提示词可能已送达，不要重发；`agent read` 看一眼屏幕再报告用户 |
    | 5、7 | **提示词已送达、执行者在工作，但 watcher 没有启动**：报告用户，说明没有额度保护；排除问题后用 `run <任务目录>` 补启动 |

@@ -6,6 +6,8 @@
 #   run   <任务目录> [--require-working] [--env QW_X=N ...]
 #                                                     拆 pane、核对工作区和 tab、启动 watcher、确认已启动
 #   watch --executor <pane> [选项]                    init（mode=watch）加 run；监视入口和联动用这一条
+#   whoami [--exclude <pane>]                        输出调度者（本 agent）的权威 pane_id、workspace_id、tab_id、source=env|discovered；
+#                                                     Codex 里（CODEX_THREAD_ID 非空）环境变量过期时按类型、工作目录、状态自动发现，唯一匹配才采用
 #   dispatch --executor <pane> --scheduler <pane> --scheduler-kind <kind> (--prompt <文本> | --prompt-file <文件>) [选项]
 #                                                     init、发提示词并确认执行者已开始、run（不带 --require-working）；
 #                                                     其他 skill 调用本 skill 派发并守护时用这一条（见 references/integration.md）
@@ -34,7 +36,7 @@
 #   --env QW_X=N              给 watcher 传环境变量（可重复，只接受 QW_ 开头的数字参数）
 #
 # 标准输出为若干行 键=值：task_id、task_dir、result_file、done_file、watcher_pane（视子命令而定）。
-# 退出码：0 成功；2 参数错误；3 不在 herdr 中，或 HERDR_PANE_ID 指向不存在的 pane / 其他工作区（环境变量可能过期）；4 执行者不存在或不在当前工作区；
+# 退出码：0 成功；2 参数错误；3 不在 herdr 中，或 HERDR_PANE_ID 指向不存在的 pane / 其他工作区（环境变量可能过期），Codex 里还包括自动发现调度者的 pane 没有唯一匹配；4 执行者不存在或不在当前工作区；
 #         5 拆 pane 失败或新 pane 的工作区、tab 与执行者不一致（已关闭新 pane）；
 #         6 不满足 --require-working；7 watcher 没有确认启动；
 #         8 dispatch：执行者被阻塞（提示词可能没有送达），没有启动 watcher；
@@ -56,6 +58,7 @@ PROMPT_TEXT=; PROMPT_TEXT_SET=0; CALLBACK_ON=; CALLBACK_ON_SET=0; CALLBACK_PROMP
 REQUIRE_WORKING=0; ENVS=; TASK_DIR=
 A_KIND=; A_STATE=; A_CWD=; A_WS=; A_TAB=
 TASK_ID=; DONE_FILE=; MARKER_DIR=; MARKER_CREATED=0
+EXCLUDE_OPT=; SELF_EXCLUDE=; SELF_SOURCE=env; ENV_STALE_PANE=; SELF_PANE=; SELF_WS=; SELF_TAB=
 
 sw_err() { printf '%s\n' "$*" >&2; }
 
@@ -64,6 +67,7 @@ sw_usage() {
   sw_err "  start-watcher.sh init  --mode A|D|watch --executor <pane> [--kind K] [--scheduler P --scheduler-kind K] [--d-pane P --d-kind K] [--prompt-file F] [--result-file F] [--notify-stop 0|1] [--callback-on done|stop] [--callback-prompt 文本] [--marker-dir 绝对路径]"
   sw_err "  start-watcher.sh run   <任务目录> [--require-working] [--env QW_X=N]..."
   sw_err "  start-watcher.sh watch --executor <pane> [--kind K] [--notify-stop 0|1] [--require-working] [--env QW_X=N]..."
+  sw_err "  start-watcher.sh whoami [--exclude <pane>]    输出调度者（本 agent）的权威 pane_id、workspace_id、tab_id、source"
   sw_err "  start-watcher.sh dispatch --executor <pane> --scheduler P --scheduler-kind K (--prompt 文本 | --prompt-file F) [--kind K] [--mode A|D --d-pane P --d-kind K] [--callback-on done|stop] [--callback-prompt 文本] [--marker-dir 绝对路径] [--result-file F] [--env QW_X=N]..."
 }
 
@@ -71,18 +75,139 @@ json_str() { grep -o "\"$1\":\"[^\"]*\"" | head -1 | sed 's/^[^:]*:"//; s/"$//';
 
 kv_get() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1; }
 
+# 8.1 Codex 里环境变量过期时，自动找到调度者（本 agent）真实所在的 pane。
+# 候选 = herdr agent list 里 agent 为 codex、cwd 或 foreground_cwd 等于当前目录、不在排除集（SELF_EXCLUDE）的 pane；
+# 多于一个时再按状态 working / blocked 收窄（调度者正在运行这条命令）。恰好一个才采用，设置 SELF_PANE、SELF_WS、SELF_TAB；
+# 零个或多个返回 3（有歧义时不猜：判错会把回调发进别人的会话）。
+sw_discover_self() {
+  _d1=$(pwd -P 2>/dev/null) || _d1=; _d2=$(pwd 2>/dev/null) || _d2=
+  _d1=$(printf '%s' "$_d1" | sed 's#//*#/#g; s#\(.\)/$#\1#'); _d2=$(printf '%s' "$_d2" | sed 's#//*#/#g; s#\(.\)/$#\1#')   # 规整重复和结尾的 /
+  [ -n "$_d1$_d2" ] || { sw_err "无法取得当前目录，不能自动发现调度者 pane。"; return 3; }
+  _al=$(herdr agent list 2>&1) || { sw_err "herdr agent list 失败，不能自动发现调度者 pane：${_al}"; return 3; }
+  _tab='|'
+  _recs=$(printf '%s' "$_al" | awk '
+    { s = s $0 }
+    END {
+      p = index(s, "\"agents\":[")
+      if (p == 0) exit
+      n = length(s); depth = 0; instr = 0; esc = 0; obj = ""; cnt = 0
+      for (i = p + 10; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (instr) {
+          if (depth > 0) obj = obj c
+          if (esc) esc = 0
+          else if (c == "\\") esc = 1
+          else if (c == "\"") instr = 0
+          continue
+        }
+        if (c == "\"") { instr = 1; if (depth > 0) obj = obj c; continue }
+        if (c == "{") { depth++; obj = obj c; continue }
+        if (c == "}") {
+          depth--; obj = obj c
+          if (depth == 0) { print obj; obj = ""; cnt++; if (cnt >= 200) exit }
+          continue
+        }
+        if (c == "]" && depth == 0) exit
+        if (depth > 0) obj = obj c
+      }
+    }')
+  _cands=; _n=0
+  while IFS= read -r _o; do
+    [ -n "$_o" ] || continue
+    [ "$(printf '%s\n' "$_o" | json_str agent)" = codex ] || continue
+    _op=$(printf '%s\n' "$_o" | json_str pane_id); [ -n "$_op" ] || continue
+    case " $SELF_EXCLUDE " in *" $_op "*) continue ;; esac
+    _oc=$(printf '%s\n' "$_o" | json_str cwd); _of=$(printf '%s\n' "$_o" | json_str foreground_cwd)
+    _m=0
+    for _x in "$_oc" "$_of"; do
+      [ -n "$_x" ] || continue
+      _x=$(printf '%s' "$_x" | sed 's#//*#/#g; s#\(.\)/$#\1#')
+      { [ "$_x" = "$_d1" ] || [ "$_x" = "$_d2" ]; } && _m=1
+    done
+    [ "$_m" = 1 ] || continue
+    _cands="${_cands}${_op}${_tab}$(printf '%s\n' "$_o" | json_str workspace_id)${_tab}$(printf '%s\n' "$_o" | json_str tab_id)${_tab}$(printf '%s\n' "$_o" | json_str agent_status)${_tab}${_oc}
+"
+    _n=$((_n + 1))
+  done <<EOF_RECS
+$_recs
+EOF_RECS
+  _basis="类型 codex、工作目录一致"
+  if [ "$_n" -gt 1 ]; then
+    _nc=; _nn=0
+    while IFS="$_tab" read -r _p _w _t _st _c; do
+      [ -n "$_p" ] || continue
+      case $_st in working | blocked) _nc="${_nc}${_p}${_tab}${_w}${_tab}${_t}${_tab}${_st}${_tab}${_c}
+"; _nn=$((_nn + 1)) ;; esac
+    done <<EOF_C
+$_cands
+EOF_C
+    if [ "$_nn" -eq 1 ]; then _cands=$_nc; _n=1; _basis="类型 codex、工作目录一致、状态 working/blocked（在运行这条命令）"; fi
+  fi
+  if [ "$_n" -ne 1 ]; then
+    if [ "$_n" -eq 0 ]; then sw_err "没有找到调度者所在的 pane：herdr agent list 里没有类型 codex 且工作目录为 ${_d2:-$_d1} 的 agent。"
+    else
+      sw_err "找到 ${_n} 个类型 codex 且工作目录一致的候选，无法唯一确定哪个是调度者（不猜，以免回调发进别人的会话）："
+      while IFS="$_tab" read -r _p _w _t _st _c; do [ -n "$_p" ] && sw_err "  ${_p}（工作区 ${_w}，状态 ${_st}）"; done <<EOF_L
+$_cands
+EOF_L
+    fi
+    return 3
+  fi
+  IFS="$_tab" read -r SELF_PANE SELF_WS SELF_TAB _rest <<EOF_ONE
+$_cands
+EOF_ONE
+  [ -n "$SELF_PANE" ] && [ -n "$SELF_WS" ] || { sw_err "候选缺少 pane_id 或 workspace_id，无法采用。"; return 3; }
+  sw_err "调度者已自动确认为 pane ${SELF_PANE}（工作区 ${SELF_WS}），依据：${_basis}。环境变量 HERDR_PANE_ID=${HERDR_PANE_ID:-空} 已过期（Codex 共享 app-server 守护进程带来的旧值），本次运行使用这个值；建议今后用 codex --no-daemon 启动 Codex。"
+  return 0
+}
+
+# 8.2 Codex 里判定环境变量是否过期；过期则自动发现并改写 HERDR_PANE_ID / HERDR_WORKSPACE_ID / HERDR_TAB_ID。
+sw_codex_env() {
+  _stale=0
+  if [ -n "${HERDR_PANE_ID:-}" ]; then
+    if _pg=$(herdr pane get "$HERDR_PANE_ID" 2>/dev/null); then
+      _pw=$(printf '%s\n' "$_pg" | json_str workspace_id)
+      _pa=$(printf '%s\n' "$_pg" | json_str agent)
+      _ps=$(printf '%s\n' "$_pg" | grep -o '"agent_session":{[^}]*}' | json_str value)
+      if [ "$_pw" != "${HERDR_WORKSPACE_ID:-}" ]; then _stale=1
+      elif [ -n "$_ps" ]; then [ "$_ps" = "$CODEX_THREAD_ID" ] || _stale=1
+      elif [ -n "$_pa" ] && [ "$_pa" != codex ]; then _stale=1
+      fi
+    else
+      _stale=1
+    fi
+    [ "$_stale" = 1 ] || return 0
+    ENV_STALE_PANE=$HERDR_PANE_ID
+  fi
+  SELF_EXCLUDE="${EXEC:-} ${D_PANE:-} ${EXCLUDE_OPT:-}"
+  if sw_discover_self; then
+    export HERDR_PANE_ID=$SELF_PANE HERDR_WORKSPACE_ID=$SELF_WS
+    export HERDR_TAB_ID=$SELF_TAB   # 缺失时为空：whoami 再用 herdr pane get 补，不残留过期的旧值
+    SELF_SOURCE=discovered
+    return 0
+  fi
+  # 环境变量本来就为空：保持原行为（不拦截，只比较执行者与调度者）；有值但判为过期：无法修正，退出码 3
+  [ -n "$ENV_STALE_PANE" ] || return 0
+  sw_err "HERDR_PANE_ID=${ENV_STALE_PANE} 已过期或指向别的 pane，而且无法自动确定真实的 pane。"
+  sw_err "处理：用 codex --no-daemon 启动 Codex（用 herdr 启动时在命令末尾加 -- --no-daemon）；或请用户确认真实的 pane、工作区、tab 后，用 HERDR_PANE_ID=… HERDR_WORKSPACE_ID=… HERDR_TAB_ID=… 作为前缀重新运行。"
+  return 3
+}
+
 # 8.3 检查运行环境
 sw_check_env() {
+  SELF_SOURCE=env; ENV_STALE_PANE=
   if [ "${HERDR_ENV:-}" != 1 ] || [ -z "${HERDR_WORKSPACE_ID:-}" ]; then
     sw_err "不在 herdr 中：需要 HERDR_ENV=1 且 HERDR_WORKSPACE_ID 非空"
     return 3
   fi
   command -v herdr >/dev/null 2>&1 || { sw_err "找不到 herdr 命令"; return 3; }
+  # Codex 里（CODEX_THREAD_ID 非空）：共享 app-server 守护进程可能带来旧的 HERDR_*，过期时自动发现
+  if [ -n "${CODEX_THREAD_ID:-}" ]; then sw_codex_env; return $?; fi
   # 8.4 HERDR_PANE_ID 非空时必须指向真实存在、且在当前工作区的 pane；否则环境变量可能已过期。
   if [ -n "${HERDR_PANE_ID:-}" ]; then
     _pg=$(herdr pane get "$HERDR_PANE_ID" 2>/dev/null) || {
       sw_err "HERDR_PANE_ID=${HERDR_PANE_ID} 指向的 pane 不存在。环境变量可能已过期（例如 Codex 的 app-server 守护进程在更早的 herdr pane 里启动，所有经它启动的 Codex agent 继承了它的旧环境）。"
-      sw_err "处理：重启 Codex 的 app-server；或请用户确认真实的 pane、工作区、tab 后，用 HERDR_PANE_ID=… HERDR_WORKSPACE_ID=… HERDR_TAB_ID=… 作为前缀重新运行。若确认环境正确，可重试一次。"
+      sw_err "处理：Codex 用 codex --no-daemon 启动（用 herdr 启动时在命令末尾加 -- --no-daemon）；或请用户确认真实的 pane、工作区、tab 后，用 HERDR_PANE_ID=… HERDR_WORKSPACE_ID=… HERDR_TAB_ID=… 作为前缀重新运行。若确认环境正确，可重试一次。"
       return 3
     }
     _pw=$(printf '%s\n' "$_pg" | json_str workspace_id)
@@ -142,7 +267,7 @@ SW_ALLOW=; SW_SUB=; SW_HINT=
 sw_parse() {
   while [ $# -gt 0 ]; do
     case $1 in
-      --mode | --executor | --kind | --scheduler | --scheduler-kind | --d-pane | --d-kind | --prompt | --prompt-file | --result-file | --notify-stop | --callback-on | --callback-prompt | --marker-dir | --require-working | --env) ;;
+      --mode | --executor | --kind | --scheduler | --scheduler-kind | --d-pane | --d-kind | --prompt | --prompt-file | --result-file | --notify-stop | --callback-on | --callback-prompt | --marker-dir | --exclude | --require-working | --env) ;;
       *) sw_err "未知选项：$1"; return 2 ;;
     esac
     case " $SW_ALLOW " in
@@ -168,6 +293,7 @@ sw_parse() {
       --callback-on) CALLBACK_ON=${2:-}; CALLBACK_ON_SET=1; shift 2 ;;
       --callback-prompt) CALLBACK_PROMPT=${2:-}; CALLBACK_PROMPT_SET=1; shift 2 ;;
       --marker-dir) MARKER_DIR_OPT=${2:-}; MARKER_DIR_OPT_SET=1; shift 2 ;;
+      --exclude) EXCLUDE_OPT=${2:-}; shift 2 ;;
       --require-working) REQUIRE_WORKING=1; shift ;;
       --env)
         sw_env_ok "${2:-}" || { sw_err "--env 只接受 QW_ 开头的数字参数，如 QW_GRACE=600：${2:-}"; return 2; }
@@ -204,6 +330,11 @@ sw_write_ticket() {
   [ -z "$RESULT_FILE" ] || sw_check_val --result-file '^.+$' "$RESULT_FILE" || return 2
   [ -z "$PROMPT_FILE" ] || sw_check_val --prompt-file '^.+$' "$PROMPT_FILE" || return 2
   if [ "$MODE" != watch ]; then
+    # 自动发现了调度者的真实 pane，而调用方传的 --scheduler 还是过期的环境变量值：替换，否则回调会发错会话
+    if [ "$SELF_SOURCE" = discovered ] && [ -n "$ENV_STALE_PANE" ] && [ "$SCHED" = "$ENV_STALE_PANE" ]; then
+      sw_err "--scheduler ${SCHED} 是过期的环境变量值，已替换为自动确认的调度者 ${SELF_PANE}"
+      SCHED=$SELF_PANE
+    fi
     [ -n "$SCHED" ] && [ -n "$SCHED_KIND" ] || { sw_err "mode=${MODE} 需要 --scheduler 和 --scheduler-kind"; return 2; }
     sw_check_val --scheduler "$SW_RE_PANE" "$SCHED" || return 2
     sw_check_val --scheduler-kind "$SW_RE_KIND" "$SCHED_KIND" || return 2
@@ -300,6 +431,7 @@ sw_cmd_run() {
   SW_SUB=run; SW_HINT='只用于 init/watch，请在 init 时指定（run 不会改动已写好的 ticket）'
   SW_ALLOW='--require-working --env'
   sw_parse "$@" || return $?
+  EXEC=$(kv_get "$TASK_DIR/ticket" executor_pane)   # 自动发现调度者时把执行者排除在候选之外
   sw_check_env || return $?
   sw_do_run
 }
@@ -442,6 +574,19 @@ sw_cmd_dispatch() {
   return "$_drc"
 }
 
+# whoami 子命令：输出调度者（本 agent）的权威 pane 信息；Codex 里环境变量过期时自动发现
+sw_cmd_whoami() {
+  SW_SUB=whoami; SW_HINT='whoami 只接受 --exclude'
+  SW_ALLOW='--exclude'
+  sw_parse "$@" || return $?
+  [ -z "$EXCLUDE_OPT" ] || sw_check_val --exclude "$SW_RE_PANE" "$EXCLUDE_OPT" || return 2
+  sw_check_env || return $?
+  [ -n "${HERDR_PANE_ID:-}" ] || { sw_err "HERDR_PANE_ID 为空，无法确定调度者的 pane。"; return 3; }
+  _wt=${HERDR_TAB_ID:-}
+  [ -n "$_wt" ] || _wt=$(herdr pane get "$HERDR_PANE_ID" 2>/dev/null | json_str tab_id)
+  printf 'pane_id=%s\nworkspace_id=%s\ntab_id=%s\nsource=%s\n' "$HERDR_PANE_ID" "$HERDR_WORKSPACE_ID" "$_wt" "$SELF_SOURCE"
+}
+
 # 8.10 入口：分发子命令
 main() {
   _sub=${1:-}
@@ -451,6 +596,7 @@ main() {
     run) sw_cmd_run "$@" ;;
     watch) sw_cmd_watch "$@" ;;
     dispatch) sw_cmd_dispatch "$@" ;;
+    whoami) sw_cmd_whoami "$@" ;;
     *) sw_usage; return 2 ;;
   esac
 }

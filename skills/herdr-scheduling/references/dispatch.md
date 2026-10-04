@@ -8,7 +8,12 @@
 
 ## 1. 前置检查
 
-1. `test "${HERDR_ENV:-}" = 1`，且 `$HERDR_PANE_ID`、`$HERDR_WORKSPACE_ID` 非空；否则说明不在 herdr 中并停止。并核对 `$HERDR_PANE_ID` 有效：`herdr pane get "$HERDR_PANE_ID"` 能取到，且它的工作区等于 `$HERDR_WORKSPACE_ID`。取不到或不一致说明环境变量已过期（例如 Codex 的 app-server 守护进程在更早的 herdr pane 里启动，经它启动的 Codex agent 都继承了它的旧环境）：说明原因并停止，**不要用猜测或手填的 pane ID 继续**；处理办法是重启 Codex 的 app-server，或由用户给出真实的 pane、工作区、tab，用 `HERDR_PANE_ID=… HERDR_WORKSPACE_ID=… HERDR_TAB_ID=…` 作为前缀运行。`start-watcher.sh` 会做同样的核对并以退出码 3 结束。
+1. `test "${HERDR_ENV:-}" = 1`，且 `$HERDR_PANE_ID`、`$HERDR_WORKSPACE_ID` 非空；否则说明不在 herdr 中并停止。
+   **先取得调度者自己的 pane、工作区、tab**：`sh '<skill 目录>/scripts/start-watcher.sh' whoami`（可加 `--exclude <pane>` 排除已知不是自己的 pane，例如已选好的执行者），输出 `pane_id=`、`workspace_id=`、`tab_id=`、`source=env|discovered`。下文的 `$HERDR_PANE_ID`、`$HERDR_WORKSPACE_ID`、`$HERDR_TAB_ID` 都指这几个值。
+   - 非 Codex，或 Codex 里环境变量有效：`source=env`，就是环境变量。有效 = `herdr pane get` 取得到、工作区一致；Codex 里还要求：该 pane 有 `agent_session` 时它必须等于 `$CODEX_THREAD_ID`；没有时该 pane 的 agent 必须是 `codex`。
+   - Codex 里环境变量过期（共享 app-server 守护进程在更早的 herdr pane 里启动，经它启动的 Codex agent 都继承了它的旧环境；`herdr pane current` 同样依赖这些变量，无法纠正，去掉变量后它还会返回**当前获得焦点的 pane**，不能用）：脚本用 `herdr agent list` 自动发现：候选 = 类型 `codex`、`cwd` 或 `foreground_cwd` 等于当前目录、不是已知的执行者；多于一个时只保留状态 `working`/`blocked` 的（调度者正在运行这条命令）。**恰好一个才采用**，并在标准错误打印采用的 pane 和依据；零个或多个以退出码 3 停止并列出候选，不猜（判错会把回调发进别人的会话）。局限：旧值指向的 pane 仍然存在、是 codex、又没有 `agent_session` 可比对时，无法判定过期；Codex 状态闪烁成 `done` 时可能因收窄不到唯一而退出码 3。
+   - **根治办法**：用 `codex --no-daemon` 启动 Codex（herdr 里 `herdr agent start <名称> --kind codex --pane <pane> -- --no-daemon`），它不使用共享守护进程，环境变量就是对的；代价是看不到共享的会话列表和状态栏里的额度显示。
+   - 无法确定时说明原因并停止，**不要用猜测或手填的 pane ID 继续**；由用户给出真实的 pane、工作区、tab，用 `HERDR_PANE_ID=… HERDR_WORKSPACE_ID=… HERDR_TAB_ID=…` 作为前缀运行。
 2. **分工必须明确**。同时具备下面三项才继续，缺任何一项就**停下询问**，不要猜：
    - 执行者的 kind（如 `claude`、`codex`）；
    - 要执行的任务内容；
@@ -21,7 +26,7 @@
 
 执行 `herdr agent list`（它返回所有工作区的 agent），逐项过滤，全部满足才算候选：
 
-1. `workspace_id` == `$HERDR_WORKSPACE_ID`；
+1. `workspace_id` == `$HERDR_WORKSPACE_ID`（取自 `whoami`，见第 1 节）；
 2. `agent` == 执行者 kind；
 3. `pane_id` != `$HERDR_PANE_ID`（排除调度者自己）；
 4. `cwd` 等于任务工作目录（默认调度者当前目录）；
@@ -32,7 +37,7 @@
 - 没有候选：在当前工作区新建：
 
   ```bash
-  herdr pane split --pane "$HERDR_PANE_ID" --direction down --cwd <工作目录> --no-focus
+  herdr pane split --pane "<whoami 的 pane_id>" --direction down --cwd <工作目录> --no-focus
   herdr agent start <名称，如 hs-claude> --kind <kind> --pane <新 pane>
   ```
 
@@ -46,7 +51,7 @@
 
 ```bash
 sh '<skill 目录>/scripts/start-watcher.sh' dispatch --executor <执行者 pane> \
-  --scheduler "$HERDR_PANE_ID" --scheduler-kind <调度者 kind> \
+  --scheduler "<whoami 的 pane_id>" --scheduler-kind <调度者 kind> \
   --prompt '<任务内容>'            # 长提示词用 --prompt-file <文件>，两者只能给一个
 ```
 
@@ -91,7 +96,7 @@ sh '<skill 目录>/scripts/start-watcher.sh' dispatch --executor <执行者 pane
 | --- | --- |
 | 0 | 成功，继续第 4 节 |
 | 2 | 参数错误（含提示词为空、选项值不合法、选项对 `dispatch` 无效） |
-| 3 | 不在 herdr 中，或 `HERDR_PANE_ID` 指向不存在的 pane / 其他工作区（环境变量可能已过期，见第 1 节） |
+| 3 | 不在 herdr 中，或 `HERDR_PANE_ID` 指向不存在的 pane / 其他工作区，或 Codex 里环境变量过期而无法唯一确定调度者的真实 pane（见第 1 节；用 `codex --no-daemon` 启动，或由用户给出真实值） |
 | 4 | 执行者不存在，或不在当前工作区 |
 | 5 | 拆 pane 失败，或新 pane 的工作区、tab 不一致（已关闭新 pane）。**提示词已送达、执行者正在工作，但 watcher 没有启动**；任务目录保留，排除问题后用 `run <任务目录>` 重试（第 7 节），不要重发提示词 |
 | 7 | watcher 没有确认启动（pane 保留，供查看）；同样提示词已送达，读 pane 找原因，或用 `run` 重试 |
@@ -126,7 +131,7 @@ watcher 异常退出时，`done` 仍在。用户可以对调度者说「使用 $
 
 ```bash
 sh '<skill 目录>/scripts/start-watcher.sh' init --mode A --executor <执行者 pane> \
-  --scheduler "$HERDR_PANE_ID" --scheduler-kind <调度者 kind> [--prompt-file <完整提示词文件>] \
+  --scheduler "<whoami 的 pane_id>" --scheduler-kind <调度者 kind> [--prompt-file <完整提示词文件>] \
   [--callback-on stop] [--callback-prompt '<文本>'] [--result-file <路径>]
 ```
 
@@ -166,7 +171,7 @@ sh '<skill 目录>/scripts/start-watcher.sh' run "<task_dir>"
 | --- | --- |
 | 0 | 成功 |
 | 2 | 参数错误或任务目录里没有 `ticket` |
-| 3 | 不在 herdr 中 |
+| 3 | 不在 herdr 中；`whoami` 还会在无法确定调度者的 pane 时返回 3 |
 | 4 | 执行者不存在，或不在当前工作区 |
 | 5 | 拆 pane 失败，或新 pane 的工作区、tab 不一致（已关闭新 pane）；报告用户 |
 | 6 | 只有加了 `--require-working` 才会出现：执行者当前不是 `working` |
@@ -191,7 +196,7 @@ herdr pane run <watcher pane> "sh '<skill 目录>/scripts/quota-watcher.sh' --ti
 ```text
 id=<任务ID>
 mode=A|D|watch
-scheduler_pane=<$HERDR_PANE_ID>      # watch 模式为空
+scheduler_pane=<调度者 pane（whoami 的 pane_id）>      # watch 模式为空
 scheduler_kind=<调度者 kind>
 executor_pane=<执行者 pane>
 executor_kind=<执行者 kind>
