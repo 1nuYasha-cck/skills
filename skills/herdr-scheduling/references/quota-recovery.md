@@ -8,7 +8,7 @@
 
 | 入口 | 谁启动 | 是否派发 | 完成时 |
 | --- | --- | --- | --- |
-| 派发入口（`mode=A` / `mode=D`） | 调度者按 `dispatch.md` | 是 | 发现 `done` 标志后回调调度者，正常结束并关闭自己的 pane |
+| 派发入口（`mode=A` / `mode=D`） | 调度者按 `dispatch.md`（其他 skill 按 `integration.md`） | 是 | `callback_on=done`（缺省）：发现 `done` 标志后回调调度者；`callback_on=stop`：执行者稳定停在 `idle`/`done` 且不是额度原因就回调。回调后正常结束并关闭自己的 pane |
 | 监视入口（`mode=watch`） | 用户对任一 agent 说「盯着 <某 pane>，额度恢复后让它继续」 | 否 | 目标稳定停下且不是额度原因：通知用户，正常结束 |
 
 ### 监视入口怎么做
@@ -21,7 +21,7 @@
    sh '<skill 目录>/scripts/start-watcher.sh' watch --executor <目标 pane> [--notify-stop 0] [--require-working] [--env QW_X=N]...
    ```
 
-   它写 `mode=watch` 的 `ticket`（`scheduler_pane` 为空），再按 `dispatch.md` 第 5 节的方式启动 watcher；输出 `task_id`、`task_dir`、`watcher_pane`，退出码含义同 `dispatch.md` 第 5 节。`--require-working` 只用于「还没有确认过执行者已开始」的场景。盯一个**已经停在额度上**的 pane（本来就是 `idle`），以及对刚派发、已经确认过 `working` 的执行者（如 `dev-flow` 联动，它可能很快就完成或触达额度），都**不要加**，否则会因为「当前不是 working」而放弃守护。
+   它写 `mode=watch` 的 `ticket`（`scheduler_pane` 为空），再按 `dispatch.md` 第 7.3 节的方式启动 watcher；输出 `task_id`、`task_dir`、`watcher_pane`，退出码含义同 `dispatch.md` 第 7.3 节。`--require-working` 只用于「还没有确认过执行者已开始」的场景。盯一个**已经停在额度上**的 pane（本来就是 `idle`），以及对刚派发、已经确认过 `working` 的执行者（如 `dev-flow` 联动，它可能很快就完成或触达额度），都**不要加**，否则会因为「当前不是 working」而放弃守护。
 4. 报告并结束本轮。
 
 ## 2. 状态机
@@ -30,7 +30,10 @@
 WATCH ──(执行者稳定地离开 working)──► CLASSIFY
 CLASSIFY:
   done 标志存在                          → 回调调度者（记 callback=sent），正常结束
-  无额度文案，派发模式                    → 通知用户（提问、被打断等），结束，保留 pane
+  无额度文案，派发模式，状态 blocked       → 通知用户一次，继续守护：等执行者离开 blocked，最多 QW_BLOCK_MAX 秒，
+                                            之后回到 CLASSIFY；超时 → 通知用户，结束，保留 pane
+  无额度文案，派发模式，callback_on=stop，状态 idle/done → 回调调度者，正常结束
+  无额度文案，派发模式，其他                → 通知用户（提问、被打断、unknown 等），结束，保留 pane
   无额度文案，监视模式                    → 通知用户（目标已停下），正常结束
   mode=D 且有额度文案                     → 改派（见第 5 节）
   额度文案，不限时                        → 通知用户，结束，保留 pane
@@ -44,6 +47,8 @@ PROBE:      每 30 分钟重新判定一次，最长 12 小时，超过则通知
 ```
 
 herdr 命令（`agent get`、`agent read`）瞬时失败时最多尝试 3 次，仍失败才通知用户并结束。
+
+`blocked` 只在派发模式下继续守护（用户在执行者 pane 里批准或回答后，watcher 不丢）；监视模式下 `blocked` 仍是通知后正常结束。屏幕上有额度文案的 `blocked`（如额度菜单）不走这条，走额度流程。`blocked` 等待用 `herdr agent get` 每 `QW_STEP`（60 秒）查一次，不耗模型额度。
 
 判定依据：`herdr agent get` 的状态；`herdr agent read --source recent-unwrapped` 只匹配**末尾 15 行**；状态为 `unknown` 时一律读屏幕再判。herdr 没有额度专用状态，所以额度中断只能靠屏幕文案判定，规则见 `quota-patterns.md`。
 
@@ -72,23 +77,26 @@ herdr 命令（`agent get`、`agent read`）瞬时失败时最多尝试 3 次，
 
 `herdr notification show "<标题>" --body "<正文>"`（不耗模型额度），同时打印在 watcher pane 里。调度者与执行者同账号时，额度耗尽期间调度者可能也无法响应，所以不依赖调度者转述。通知发送失败不影响主流程。
 
+**回调句和回调条件**：`ticket` 的 `callback_prompt`（`start-watcher.sh` 的 `--callback-prompt`）指定回调时发给调度者的一行文本，缺省「使用 $herdr-scheduling 继续调度（任务：<任务ID>）」；调度者被阻塞、等待空闲失败、发送失败时通知里提示的「请手动唤醒」也用这句。`callback_on`（`--callback-on done|stop`）缺省 `done`，字段缺失或取值不合法按 `done`；监视模式不读这两个字段。
+
 **静音选项**：`ticket` 的可选字段 `notify_stop=0`（`start-watcher.sh` 的 `--notify-stop 0`）只关闭一种通知——**监视模式下目标正常停下**（状态为 `idle` 或 `done`，「目标已停下，原因不是额度」），适合被守护的 agent 每个阶段都会正常结束的场景。**`blocked`（在等批准或回答）、`unknown` 等需要用户处理的停下不受静音影响，照常通知**。额度已限、恢复时间未知、不限时、超过 24 小时、重试用尽、探测超时、目标不可用、恢复失败、改派失败、回调失败，以及派发模式下「执行者停下但没有完成标志」的通知**始终发送**，不能被静音。默认 `1`，字段缺失或取值不合法按 `1` 处理。
 
 ## 7. 防护与参数
 
 - **同一目标只允许一个 watcher**：用 `mkdir` 原子锁目录 `lock-<pane>`；已有且进程存活则拒绝，进程已死则接管。
 - **恢复计划**写在任务目录的 `plan`（`state`、`class`、`reset_epoch`、`reset_source`、`attempts`、`callback`、`probe_deadline` 等），watcher 丢失时可据此人工接手。
-- **重新启动 watcher**：运行 `sh '<skill 目录>/scripts/start-watcher.sh' run "<任务目录>"`（写法见 `dispatch.md` 第 5 节；手工写法是在新开的专用 pane 里整串运行 `sh '<skill 目录>/scripts/quota-watcher.sh' --ticket '<任务目录>'`）；`plan` 里的 `attempts` 和 `callback` 会被沿用。
-- 环境变量（默认值适合真实使用）：`QW_GRACE`（宽限期，300 秒）、`QW_BUFFER`（到点缓冲，60 秒）、`QW_FAR`（超过则不等待，86400 秒）、`QW_PROBE_INTERVAL`（探测间隔，1800 秒）、`QW_PROBE_MAX`（探测上限，43200 秒）、`QW_MAX_ATTEMPTS`（恢复重试上限，3）、`QW_RETRIES`（herdr 命令瞬时失败的尝试次数，3）、`QW_RETRY_DELAY`（重试间隔，3 秒）。
+- **重新启动 watcher**：运行 `sh '<skill 目录>/scripts/start-watcher.sh' run "<任务目录>"`（写法见 `dispatch.md` 第 7.3 节；手工写法是在新开的专用 pane 里整串运行 `sh '<skill 目录>/scripts/quota-watcher.sh' --ticket '<任务目录>'`）；`plan` 里的 `attempts` 和 `callback` 会被沿用。
+- 环境变量（默认值适合真实使用）：`QW_GRACE`（宽限期，300 秒）、`QW_BUFFER`（到点缓冲，60 秒）、`QW_FAR`（超过则不等待，86400 秒）、`QW_PROBE_INTERVAL`（探测间隔，1800 秒）、`QW_PROBE_MAX`（探测上限，43200 秒）、`QW_MAX_ATTEMPTS`（恢复重试上限，3）、`QW_RETRIES`（herdr 命令瞬时失败的尝试次数，3）、`QW_RETRY_DELAY`（重试间隔，3 秒）、`QW_BLOCK_MAX`（派发模式下等待 `blocked` 被处理的上限，7200 秒）。
 
 ## 8. 结束与 pane
 
 - 正常结束（派发模式下已完成并回调；监视模式下目标因非额度原因停下）：watcher 关闭**自己创建的** pane。
-- 其余结束（非额度原因停下、不限时、超过 24 小时、重试用尽、探测超时、目标消失、回调未送达等）一律**保留 pane**，让用户能看到原因。退出码：2 参数或 `ticket` 错误；3 已有 watcher；4 目标不可用；5 需要用户处理。
+- 其余结束（非额度原因停下且无法回调、`blocked` 等待超时、不限时、超过 24 小时、重试用尽、探测超时、目标消失、回调未送达等）一律**保留 pane**，让用户能看到原因。退出码：2 参数或 `ticket` 错误；3 已有 watcher；4 目标不可用；5 需要用户处理（含 `blocked` 等待超时、`callback_on=stop` 时回调未送达）。
 
 ## 9. 已知限制
 
 - 真实额度耗尽下的行为**未实测**：额度期间 herdr 对 Claude 标记的状态、Codex 额度耗尽后会话能否输入、限额状态下 `claude -p "/usage"` 和新开的 Codex 会话能否正常工作，都未验证。测试用桩 herdr 和模拟文案覆盖了状态机的所有分支。
 - 恢复时间未知且屏幕上的旧额度文案一直留着时，watcher 无法判断额度是否已恢复，会探测到 12 小时上限后通知用户。
+- 派发模式下 `blocked`（等批准或回答）后继续守护的行为只用桩 herdr 验证：真实 agent 的审批提示能否被 herdr 稳定标记为 `blocked`、批准后状态变化的时序，以及最长 `QW_BLOCK_MAX` 的等待在真机上的表现，均未验证。
 - 休眠期间的行为未实测；等待用分段 `sleep` 并对比时间戳，唤醒后会自我纠正。
 - GNU `date` 的分支只做了逻辑验证，没有在真实 GNU 环境验证。

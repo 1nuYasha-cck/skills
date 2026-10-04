@@ -6,12 +6,17 @@
 #   任务目录由调度者按 references/dispatch.md 创建（推荐用 start-watcher.sh），内含 ticket（必需）、prompt.txt、plan、done 等。
 #   ticket 的可选字段 notify_stop=0：监视模式下目标正常停下（idle / done）时不弹通知（默认 1）；
 #   额度相关通知和所有异常通知（含 blocked、unknown 等需要用户处理的停下）始终发送。
+#   ticket 的可选字段 callback_on=stop（缺省 done）：派发模式下执行者稳定停在 idle / done 且不是额度原因时回调调度者，
+#   不再要求 done 文件；callback_prompt=<一行文本>：回调调度者时发送的句子（缺省「使用 $herdr-scheduling 继续调度（任务：<ID>）」）。
+#   派发模式下执行者停在 blocked（等批准或回答，屏幕无额度文案）：通知用户一次后继续守护，等它离开 blocked，
+#   最多等 QW_BLOCK_MAX 秒；监视模式不受影响。
 # 退出码：0 正常结束；2 参数或 ticket 错误；3 已有 watcher 在守护同一目标；4 目标 pane 不可用；5 需要用户处理
 #
 # 可用环境变量（默认值适合真实使用，测试时可缩小）：
 #   QW_STEP 分段 sleep 步长秒(60)  QW_GRACE Claude 自动续跑宽限期秒(300)  QW_BUFFER 其余 agent 到点缓冲秒(60)
 #   QW_FAR 超过则不等待的秒数(86400)  QW_PROBE_INTERVAL 探测间隔秒(1800)  QW_PROBE_MAX 探测总上限秒(43200)
 #   QW_MAX_ATTEMPTS 恢复重试上限(3)  QW_RETRIES herdr 命令瞬时失败的尝试次数(3)  QW_RETRY_DELAY 重试间隔秒(3)
+#   QW_BLOCK_MAX 派发模式下等待 blocked 被处理的上限秒数(7200)
 #   QW_NO_USAGE=1 不做用量查询  QW_NO_CLOSE=1 结束时不关闭本 pane
 #   QP_NOW_FILE 固定当前时间的文件（测试用，此时 sleep 改为快进该文件）
 
@@ -31,13 +36,14 @@ QW_RETRIES=${QW_RETRIES:-3}
 QW_RETRY_DELAY=${QW_RETRY_DELAY:-3}
 QW_WAIT_MS=${QW_WAIT_MS:-7200000}
 QW_SETTLE_MS=${QW_SETTLE_MS:-15000}
+QW_BLOCK_MAX=${QW_BLOCK_MAX:-7200}
 QW_NO_USAGE=${QW_NO_USAGE:-0}
 QW_NO_CLOSE=${QW_NO_CLOSE:-0}
 
 CONTINUE_TEXT='额度已恢复。如果上一项任务尚未完成，请从中断处继续；如果已完成，只回复已完成。'
 
 TICKET_DIR=; TICKET=; PLAN=; ROOT=; LOCK=
-ID=; MODE=; SCHED_PANE=; SCHED_KIND=; EXEC_PANE=; EXEC_KIND=; D_KIND=; D_PANE=; DONE_FILE=; NOTIFY_STOP=1
+ID=; MODE=; SCHED_PANE=; SCHED_KIND=; EXEC_PANE=; EXEC_KIND=; D_KIND=; D_PANE=; DONE_FILE=; NOTIFY_STOP=1; CALLBACK_ON=done; CALLBACK_TEXT=
 ATTEMPTS=0
 CLS=; RESET=; RSRC=; STATE=
 EVENT_RESET=; EVENT_SRC=; USAGE_TRIED=0; USAGE_RESULT=; PROBE_DEADLINE=0; EVENT_NOTIFIED=0
@@ -126,15 +132,15 @@ notify_scheduler() {
   [ -n "$SCHED_PANE" ] || { notify_user "任务完成，但没有调度者" "任务 $ID 已完成，结果见 $TICKET_DIR"; return 1; }
   _ss=$(agent_state_of "$SCHED_PANE") || { notify_user "任务完成，调度者已不在" "请手动处理任务 ${ID}，结果见 $TICKET_DIR"; return 1; }
   case $_ss in
-    blocked) notify_user "任务完成，调度者被阻塞" "请对调度者说：使用 \$herdr-scheduling 继续调度（任务：${ID}）"; return 1 ;;
+    blocked) notify_user "任务完成，调度者被阻塞" "请对调度者说：${CALLBACK_TEXT}"; return 1 ;;
     working)
       _so=$(sh "$SCRIPT_DIR/wait-settled.sh" "$SCHED_PANE" "$QW_WAIT_MS" "$QW_SETTLE_MS") || {
-        notify_user "任务完成，等待调度者空闲失败" "请手动唤醒调度者：使用 \$herdr-scheduling 继续调度（任务：${ID}）"; return 1; }
+        notify_user "任务完成，等待调度者空闲失败" "请手动唤醒调度者：${CALLBACK_TEXT}"; return 1; }
       case $_so in *blocked*) notify_user "任务完成，调度者被阻塞" "任务 $ID"; return 1 ;; esac
       ;;
   esac
-  herdr agent prompt "$SCHED_PANE" "使用 \$herdr-scheduling 继续调度（任务：${ID}）" >/dev/null 2>&1 || {
-    notify_user "任务完成，回调发送失败" "请手动唤醒调度者：使用 \$herdr-scheduling 继续调度（任务：${ID}）"; return 1; }
+  herdr agent prompt "$SCHED_PANE" "$CALLBACK_TEXT" >/dev/null 2>&1 || {
+    notify_user "任务完成，回调发送失败" "请手动唤醒调度者：${CALLBACK_TEXT}"; return 1; }
   plan_write callback sent
   qw_log "已回调调度者 $SCHED_PANE"
   return 0
@@ -152,6 +158,23 @@ wait_until_epoch() {
     qw_sleep "$_ws"
     _wst=$(agent_state_of "$EXEC_PANE") || return 2
     [ "$_wst" = working ] && return 1
+  done
+}
+
+# 8.13 派发模式下执行者停在 blocked：等它离开 blocked，最多等 QW_BLOCK_MAX 秒。
+# 返回 0 已离开 blocked；1 超时仍在 blocked；2 目标 pane 不可用。
+# 轮询 herdr agent get（不耗模型额度），不用 wait-settled.sh（它遇到 blocked 会立即返回）。
+wait_blocked_cleared() {
+  _bd=$(( $(qp_now) + QW_BLOCK_MAX ))
+  plan_write blocked_deadline "$_bd"
+  while :; do
+    _bs=$(agent_state_of "$EXEC_PANE") || return 2
+    [ "$_bs" = blocked ] || return 0
+    _bn=$(qp_now)
+    [ "$_bn" -ge "$_bd" ] && return 1
+    _bw=$((_bd - _bn))
+    [ "$_bw" -gt "$QW_STEP" ] && _bw=$QW_STEP
+    qw_sleep "$_bw"
   done
 }
 
@@ -300,6 +323,10 @@ load_ticket() {
   DONE_FILE=$(kv_get "$TICKET" done_file)
   NOTIFY_STOP=$(kv_get "$TICKET" notify_stop)
   [ "$NOTIFY_STOP" = 0 ] || NOTIFY_STOP=1   # 缺失、为空或取值不合法一律按 1（通知）
+  CALLBACK_ON=$(kv_get "$TICKET" callback_on)
+  [ "$CALLBACK_ON" = stop ] || CALLBACK_ON=done   # 缺失、为空或取值不合法一律按 done
+  CALLBACK_TEXT=$(kv_get "$TICKET" callback_prompt)
+  [ -n "$CALLBACK_TEXT" ] || CALLBACK_TEXT="使用 \$herdr-scheduling 继续调度（任务：${ID}）"
   [ -n "$ID" ] && [ -n "$EXEC_PANE" ] && [ -n "$EXEC_KIND" ] || return 1
   case $MODE in A | D | watch) ;; *) return 1 ;; esac
   [ -n "$DONE_FILE" ] || DONE_FILE="$TICKET_DIR/done"
@@ -363,6 +390,21 @@ main() {
             notify_user "目标已停下，原因不是额度" "$EXEC_PANE 状态 $STATE"
           fi
           finish_normal
+        fi
+        if [ "$STATE" = blocked ]; then
+          # R5：执行者在等批准或回答。通知一次，继续守护，等它离开 blocked 后回到循环顶部重新判定。
+          plan_write state BLOCKED
+          notify_user "执行者在等待批准或回答" "$EXEC_PANE 处理后 watcher 会继续守护；最多等待 $((QW_BLOCK_MAX / 60)) 分钟"
+          wait_blocked_cleared; _b=$?
+          case $_b in
+            0) plan_write state WATCH; SKIP_WAIT=1; continue ;;
+            1) notify_user "等待处理超时" "$EXEC_PANE 仍在 blocked，已停止守护"; finish_abnormal "blocked 超时" 5 ;;
+            *) notify_user "目标 pane 不可用" "$EXEC_PANE"; finish_abnormal "目标 pane 不可用" 4 ;;
+          esac
+        fi
+        if [ "$CALLBACK_ON" = stop ] && { [ "$STATE" = idle ] || [ "$STATE" = done ]; }; then
+          plan_write state CALLBACK
+          if notify_scheduler; then finish_normal; else finish_abnormal "回调未送达" 5; fi
         fi
         notify_user "执行者已停下，但没有完成标志，原因不是额度" "$EXEC_PANE 状态 ${STATE}，请查看（提问、被打断或崩溃）"
         finish_abnormal "非额度原因停下" 5 ;;
