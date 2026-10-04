@@ -6,7 +6,8 @@
 
 | Skill | 说明 | 文档 |
 | --- | --- | --- |
-| [`dev-flow`](skills/dev-flow) | 开发全流程：项目初始化 → 技术方案 → 开发任务包 → 开发执行 → 代码评审 → 提交，用一份 `任务状态.md` 串起来，支持单 agent、多 agent 接力和 herdr 调度 | [docs/dev-flow.md](docs/dev-flow.md) |
+| [`dev-flow`](skills/dev-flow) | 开发全流程：项目初始化 → 技术方案 → 开发任务包 → 开发执行 → 代码评审 → 提交，用一份 `任务状态.md` 串起来，支持单 agent、多 agent 接力和 herdr 调度（调度部分调用 `herdr-scheduling`） | [docs/dev-flow.md](docs/dev-flow.md) |
+| [`herdr-scheduling`](skills/herdr-scheduling) | 在 herdr 里把任务派发给另一个 pane 的 agent：调度者派发后立即结束本轮不空等，执行者完成后由后台 watcher 回调，执行者因额度限制停下时 watcher 等到恢复时间让同一会话继续；也可被其他 skill（如 `dev-flow`）调用 | [docs/herdr-scheduling.md](docs/herdr-scheduling.md) |
 
 ## 安装
 
@@ -20,6 +21,9 @@ npx skills add 1nuYasha-cck/skills --list
 
 # 安装到用户级（对所有项目生效）
 npx skills add 1nuYasha-cck/skills --skill dev-flow -g
+
+# 要用 dev-flow 的 herdr 调度，需要同时安装 herdr-scheduling
+npx skills add 1nuYasha-cck/skills --skill herdr-scheduling -g
 
 # 之后更新
 npx skills update
@@ -37,10 +41,12 @@ git clone https://github.com/1nuYasha-cck/skills.git ~/src/skills
 # Claude Code
 mkdir -p ~/.claude/skills
 ln -s ~/src/skills/skills/dev-flow ~/.claude/skills/dev-flow
+ln -s ~/src/skills/skills/herdr-scheduling ~/.claude/skills/herdr-scheduling
 
 # Codex
 mkdir -p ~/.codex/skills
 ln -s ~/src/skills/skills/dev-flow ~/.codex/skills/dev-flow
+ln -s ~/src/skills/skills/herdr-scheduling ~/.codex/skills/herdr-scheduling
 ```
 
 以后执行 `git -C ~/src/skills pull` 即可更新。如果 `~/.claude/skills`、`~/.codex/skills` 已经统一链接到 `~/.agents/skills`，只需链接一次；不需要更新时，把 `ln -s` 换成 `cp -R` 即可。
