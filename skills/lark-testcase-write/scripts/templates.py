@@ -11,8 +11,12 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment
 from openpyxl.utils import get_column_letter, column_index_from_string
 from docx import Document
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from doc_extract import extract_document
 import lark_io
+import source_trace
 
 def detect_format(path):
     kind = extract_document(path)["format"]
@@ -63,6 +67,14 @@ def text_value(value, mapping, numbered=False):
     if len(value) > 32767:
         raise ValueError('Excel cell text exceeds 32767 characters')
     return value
+
+
+def field_text(case, field, mapping, numbered=False):
+    value = case[field]
+    if field == '参考来源':
+        # Structured or legacy sources render as readable text, never hidden JSON.
+        value = source_trace.cell_text(value)
+    return text_value(value, mapping, numbered)
 
 
 def check_fields(cases, columns):
@@ -116,6 +128,7 @@ def fill_xlsx(template, cases_doc, mapping, out_path, overwrite=False):
     columns = mapping['columns']
     cases = cases_doc['cases']
     check_fields(cases, columns)
+    sources_sheet = sources_sheet_name(mapping, cases_doc, wb)
     mode = mapping.get('row_mode', 'per_case')
     if mode not in ('per_case', 'per_step'):
         raise ValueError('Unknown row_mode')
@@ -180,13 +193,13 @@ def fill_xlsx(template, cases_doc, mapping, out_path, overwrite=False):
         steps, expected = case.get('测试步骤', []), case.get('预期结果', [])
         for offset in range(count):
             for col, field in columns.items():
-                value = case[field]
                 if mode == 'per_step' and field in ('测试步骤', '预期结果'):
+                    value = case[field]
                     value = value[offset] if offset < len(value) else ''
                     if mapping.get('number_steps') and value:
                         value = str(offset+1) + '. ' + str(value)
                 else:
-                    value = text_value(value, mapping, mapping.get('number_steps', False) and field in ('测试步骤', '预期结果'))
+                    value = field_text(case, field, mapping, mapping.get('number_steps', False) and field in ('测试步骤', '预期结果'))
                 cell = ws[f'{col}{row_num+offset}']
                 cell._style = copy.copy(styles[col])
                 alignment = copy.copy(cell.alignment)
@@ -222,9 +235,46 @@ def fill_xlsx(template, cases_doc, mapping, out_path, overwrite=False):
         ws[coordinate].alignment = alignment
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
+    if sources_sheet:
+        write_sources_sheet(wb.create_sheet(sources_sheet), cases_doc)
     wb.save(out)
     wb.close()
-    return {'rows_written': row_num-start, 'merges': merges, 'out': str(out), 'sha256': hashlib.sha256(out.read_bytes()).hexdigest()}
+    return {'rows_written': row_num-start, 'merges': merges, 'out': str(out), 'sha256': hashlib.sha256(out.read_bytes()).hexdigest(),
+            'sources': dict(source_trace.summary(cases_doc), location=sources_sheet or source_location(mapping, cases_doc, 'sources_sheet'))}
+
+
+def source_location(mapping, cases_doc, key):
+    if not source_trace.has_content(cases_doc):
+        return 'none_recorded'
+    # Only an explicit mapping choice omits the readable source table.
+    return 'omitted_by_mapping' if mapping.get(key, True) is False else None
+
+
+def sources_sheet_name(mapping, cases_doc, wb):
+    name = mapping.get('sources_sheet', '来源与参考')
+    if name is False or not source_trace.has_content(cases_doc):
+        return None
+    if (not isinstance(name, str) or not name or len(name) > 31 or re.search(r'[\\/*?:\[\]]', name)):
+        raise ValueError('sources_sheet must be a valid sheet name or false')
+    if name.lower() in {sheet.lower() for sheet in wb.sheetnames} or name.lower() == str(mapping.get('output_sheet', '')).lower():
+        raise ValueError('sources_sheet already exists: ' + name + '; set another sources_sheet name')
+    return name
+
+
+def write_sources_sheet(ws, cases_doc):
+    ws.append(source_trace.sheet_header())
+    link_columns = {i + 1 for i, key in enumerate(source_trace.SHEET_COLUMNS) if key in source_trace.URL_KEYS}
+    for row in source_trace.sheet_rows(cases_doc):
+        ws.append([None] * len(row))
+        for col, value in enumerate(row, 1):
+            cell = ws.cell(ws.max_row, col)
+            set_text(cell, text_value(value, {}))
+            if col in link_columns and source_trace._is_url(value):
+                cell.hyperlink = value
+            cell.alignment = Alignment(wrap_text=True, vertical='top')
+    for col, key in enumerate(source_trace.SHEET_COLUMNS, 1):
+        ws.column_dimensions[get_column_letter(col)].width = source_trace.COLUMN_WIDTHS[key]
+    ws.freeze_panes = 'A2'
 
 
 def fill_docx(template, cases_doc, mapping, out_path, overwrite=False):
@@ -232,6 +282,7 @@ def fill_docx(template, cases_doc, mapping, out_path, overwrite=False):
     doc = Document(template)
     cases = cases_doc['cases']
     check_fields(cases, mapping.get('columns', {}))
+    include_sources = mapping.get('sources_section', True) is not False and source_trace.has_content(cases_doc)
     if 'table' in mapping:
         table = doc.tables[mapping['table']]
         style = copy.deepcopy(table.rows[mapping.get('style_row', len(table.rows)-1)]._tr)
@@ -245,7 +296,7 @@ def fill_docx(template, cases_doc, mapping, out_path, overwrite=False):
                         run.text = ''
             for column, field in mapping['columns'].items():
                 cell = row.cells[int(column)]
-                value = text_value(case[field], mapping, mapping.get('number_steps', False) and field in ('测试步骤', '预期结果'))
+                value = field_text(case, field, mapping, mapping.get('number_steps', False) and field in ('测试步骤', '预期结果'))
                 paragraph = cell.paragraphs[0]
                 if paragraph.runs:
                     paragraph.runs[0].text = value
@@ -279,11 +330,60 @@ def fill_docx(template, cases_doc, mapping, out_path, overwrite=False):
                 element = copy.deepcopy(original)
                 for text in element.iter():
                     if text.tag.endswith('}t') and text.text:
-                        text.text = re.sub(r'\{\{([^{}]+)\}\}', lambda match: text_value(case[match.group(1)], mapping), text.text)
+                        text.text = re.sub(r'\{\{([^{}]+)\}\}', lambda match: field_text(case, match.group(1), mapping), text.text)
                 parent.insert(position, element)
                 position += 1
+    if include_sources:
+        append_docx_sources(doc, cases_doc)
     doc.save(out)
-    return {'out': str(out), 'cases': len(cases), 'sha256': hashlib.sha256(out.read_bytes()).hexdigest()}
+    return {'out': str(out), 'cases': len(cases), 'sha256': hashlib.sha256(out.read_bytes()).hexdigest(),
+            'sources': dict(source_trace.summary(cases_doc), location='appended_section' if include_sources
+                            else source_location(mapping, cases_doc, 'sources_section'))}
+
+
+def append_docx_sources(doc, cases_doc):
+    # Plain paragraphs avoid depending on template heading/table styles.
+    doc.add_paragraph().add_run('来源与参考').bold = True
+    doc.add_paragraph('以下来源由编写 Agent 记录并复核；标“未提供”的字段没有可靠来源，脚本不推测 ID、版本或链接。')
+    header = source_trace.sheet_header()
+    rows = source_trace.sheet_rows(cases_doc)
+    if not rows:
+        doc.add_paragraph('未记录需求或参考来源。')
+    if not source_trace.navigation(cases_doc)['draft_folder_url']:
+        doc.add_paragraph('草稿目录：未提供草稿目录链接（不推测 URL）')
+    for row in rows:
+        paragraph = doc.add_paragraph()
+        paragraph.add_run(f'{header[0]}：{row[0]} · {header[1]}：{row[1]}')
+        for key, label, value in zip(source_trace.SHEET_COLUMNS[2:], header[2:], row[2:]):
+            if value in ('', None):
+                continue
+            paragraph.add_run().add_break()
+            paragraph.add_run(label + '：')
+            if key in source_trace.URL_KEYS and source_trace._is_url(value):
+                add_docx_hyperlink(paragraph, source_trace.link_text(key, row), value)
+            else:
+                paragraph.add_run(str(value))
+
+
+def add_docx_hyperlink(paragraph, text, url):
+    """Clickable external link: a w:hyperlink bound to a document relationship."""
+    r_id = paragraph.part.relate_to(url, RT.HYPERLINK, is_external=True)
+    link = OxmlElement('w:hyperlink')
+    link.set(qn('r:id'), r_id)
+    run = OxmlElement('w:r')
+    props = OxmlElement('w:rPr')
+    color = OxmlElement('w:color')
+    color.set(qn('w:val'), '0563C1')
+    underline = OxmlElement('w:u')
+    underline.set(qn('w:val'), 'single')
+    props.extend([color, underline])
+    run.append(props)
+    node = OxmlElement('w:t')
+    node.text = text
+    node.set(qn('xml:space'), 'preserve')
+    run.append(node)
+    link.append(run)
+    paragraph._p.append(link)
 
 
 def markdown_content(cases_doc, mapping):
@@ -296,7 +396,7 @@ def markdown_content(cases_doc, mapping):
         for case in cases_doc['cases']:
             lines += ['## ' + str(case['用例编号']), '']
             for field in fields:
-                lines += ['### ' + field, text_value(case[field], mapping), '']
+                lines += ['### ' + field, field_text(case, field, mapping), '']
     else:
         def esc(value):
             return text_value(value, mapping).replace('\\', '\\\\').replace('|', '\\|').replace('\n', '<br>')
@@ -304,7 +404,7 @@ def markdown_content(cases_doc, mapping):
         block = list(header)
         tables = []
         for case in cases_doc['cases']:
-            row = '| ' + ' | '.join(esc(case[f]) for f in fields) + ' |'
+            row = '| ' + ' | '.join(esc(field_text(case, f, mapping)) for f in fields) + ' |'
             try:
                 lark_io.split_markdown('\n'.join(block + [row]) + '\n')
             except ValueError:
@@ -317,13 +417,19 @@ def markdown_content(cases_doc, mapping):
             block.append(row)
         tables.append('\n'.join(block))
         lines += ['\n\n'.join(tables)]
+    if mapping.get('sources_section', True) is not False and source_trace.has_content(cases_doc):
+        lines += ['', source_trace.markdown_section(cases_doc).rstrip('\n')]
     return '\n'.join(lines) + '\n'
 
 
 def render_markdown(cases_doc, mapping, out_path, overwrite=False):
     out = protect_output(out_path, overwrite=overwrite)
-    out.write_text(markdown_content(cases_doc, mapping), encoding='utf-8')
-    return {'out': str(out), 'cases': len(cases_doc['cases'])}
+    content = markdown_content(cases_doc, mapping)
+    out.write_text(content, encoding='utf-8')
+    located = '## 来源与参考' in content and source_trace.has_content(cases_doc)
+    return {'out': str(out), 'cases': len(cases_doc['cases']),
+            'sources': dict(source_trace.summary(cases_doc), location='appended_section' if located
+                            else source_location(mapping, cases_doc, 'sources_section'))}
 
 
 def default_home():
