@@ -6,7 +6,7 @@
 
 | Skill | 说明 | 文档 |
 | --- | --- | --- |
-| [`dev-flow`](skills/dev-flow) | 开发全流程：项目初始化 → 技术方案 → 开发任务包 → 开发执行 → 代码评审 → 提交，用一份 `任务状态.md` 串起来，支持单 agent、多 agent 接力和 herdr 调度 | [docs/dev-flow.md](docs/dev-flow.md) |
+| [`dev-flow`](skills/dev-flow) | 开发全流程：项目初始化 → 技术方案 → 开发任务包 → 开发执行 → 代码评审 → 提交，用一份 `任务状态.md` 串起来，支持单 agent 和多 agent 接力，不内置调度 | [docs/dev-flow.md](docs/dev-flow.md) |
 
 ## 安装
 
