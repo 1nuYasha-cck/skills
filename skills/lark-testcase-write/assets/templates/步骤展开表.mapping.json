@@ -1,0 +1,40 @@
+{
+  "sheet": "测试用例",
+  "start_row": 2,
+  "style_row": 2,
+  "row_mode": "per_step",
+  "columns": {
+    "A": "用例编号",
+    "B": "用例标题",
+    "C": "需求编号",
+    "D": "前置条件",
+    "E": "测试步骤",
+    "F": "预期结果",
+    "G": "设计方法",
+    "H": "优先级"
+  },
+  "clear_example_rows": [
+    2,
+    2
+  ],
+  "list_join": "\n",
+  "number_steps": true,
+  "merge_case_columns": [
+    "A",
+    "B",
+    "C",
+    "D",
+    "G",
+    "H"
+  ],
+  "column_widths": {
+    "A": 30,
+    "B": 40,
+    "C": 28,
+    "D": 45,
+    "E": 60,
+    "F": 60,
+    "G": 24,
+    "H": 18
+  }
+}
