@@ -4,9 +4,9 @@
 
 ## Skills
 
-| Skill | 说明 | 文档 |
-| --- | --- | --- |
-| [`dev-flow`](skills/dev-flow) | 开发全流程：项目初始化 → 技术方案 → 开发任务包 → 开发执行 → 代码评审 → 提交，用一份 `任务状态.md` 串起来，支持单 agent、多 agent 接力和 herdr 调度（调度部分调用 `herdr-scheduling`） | [docs/dev-flow.md](docs/dev-flow.md) |
+| Skill                                         | 说明                                                                                                                                 | 文档                                                   |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| [`dev-flow`](skills/dev-flow)                 | 开发全流程：项目初始化 → 技术方案 → 开发任务包 → 开发执行 → 代码评审 → 提交，用一份 `任务状态.md` 串起来，支持单 agent、多 agent 接力和 herdr 调度（调度部分调用 `herdr-scheduling`）          | [docs/dev-flow.md](docs/dev-flow.md)                 |
 | [`herdr-scheduling`](skills/herdr-scheduling) | 在 herdr 里把任务派发给另一个 pane 的 agent：调度者派发后立即结束本轮不空等，执行者完成后由后台 watcher 回调，执行者因额度限制停下时 watcher 等到恢复时间让同一会话继续；也可被其他 skill（如 `dev-flow`）调用 | [docs/herdr-scheduling.md](docs/herdr-scheduling.md) |
 
 ## 安装

@@ -1,0 +1,4 @@
+interface:
+  display_name: "飞书测试用例库维护"
+  short_description: "Agent梳理普通用例文档，脚本完成飞书归档与回读"
+  default_prompt: "使用 $lark-testcase-maintain 梳理用户指定的测试用例来源，预览确认后导入飞书标准用例库。"
