@@ -9,6 +9,17 @@
       "folders": {"root": "example_root", "originals": "example_originals", "bodies": "example_bodies"}
     },
     {
+      "name": "示例正式索引库",
+      "kind": "standard",
+      "schema_profile": "indexed",
+      "base_token": "example_search_base",
+      "url": "https://example.feishu.cn/base/example_search_base",
+      "tables": {"cases": "example_index_cases", "catalog": "example_index_catalog", "batches": "example_batches", "sources": "example_sources", "review": "example_review"},
+      "table_base_tokens": {"batches": "example_maintenance_base", "sources": "example_maintenance_base", "review": "example_maintenance_base"},
+      "field_maps": {"cases": {"原用例编号": "原用例编号"}},
+      "search_policy": {"default_scope": "published", "publication_field": "发布状态", "published_values": ["已发布"]}
+    },
+    {
       "name": "示例外部库",
       "kind": "external",
       "base_token": "example_external_base",
