@@ -38,6 +38,16 @@ agent 会按这个顺序工作：
 - 本次指定的模板只用于本次；只有你明确要求“设为默认”时，才会保存为你的默认模板。
 - 模板可以是 xlsx、docx、Markdown；扩展名与实际内容不符（例如 HTML 存成 .xlsx）也能识别，agent 会按实际结构决定怎么生成。
 
+## 来源、参考与草稿导航
+
+`cases.json` 可选记录文档级 `document.sources` 和用例级 `参考来源`。旧字符串和 `{type, ref, note}` 对象仍可用，也可以记录需求链接、章节或本地路径，参考用例的可读编号、系统ID、内容版本、索引记录链接、正文章节链接、适配理由与未确认项。信息由 agent 阅读复核后填写，脚本不推测缺失的ID、版本或地址；未知字段也会保留。
+
+有来源时，xlsx 默认新增“来源与参考”工作表，docx/Markdown 默认追加同名小节；Word 和 Excel 中的来源、索引、正文与目录链接可点击。本地来源路径保留，系统ID作为追溯信息展示。映射可用 `sources_sheet: false` 或 `sources_section: false` 明确省略附加表或小节，报告会记录省略；未记录来源时保持原输出。格式见 [来源字段说明](../skills/lark-testcase-write/references/cases-format.md)。
+
+上传 Markdown 草稿时可用 `--cases` 附加来源，用 `--draft-folder-url` 或 `document.navigation.draft_folder_url` 提供草稿目录链接；缺失时会明确说明，不根据 token 猜地址。草稿包含目录导航与同批附件名称。
+
+如需给相关草稿添加反向链接，可用 `--backlink` 指定目标。目标必须同时在 `document.navigation.editable_drafts` 中声明为可编辑草稿；已知需求/参考来源和配置中的正式库资源会被拒绝。只在本次创建 Markdown 草稿时追加反链，不重试结果未知的写入。此功能不向正式库发布用例。
+
 ## 与其他 skill 的关系
 
 - 可以单独使用，不需要先装 `lark-testcase-search` 或 `lark-testcase-maintain`。
@@ -48,3 +58,4 @@ agent 会按这个顺序工作：
 - 覆盖率只说明 agent 给出的模型被覆盖，不代表用例已在台架或设备上执行通过。
 - 生成的 xlsx 用 `openpyxl` 写出，没有在 Excel/WPS 中做公式实算和打印版式检查时会如实说明。
 - 输出必须写在所有输入文件所在目录之外，不会覆盖需求、模板等来源文件。
+- 来源链接结构与目标保存可用本地检查核验；目标账号的访问权限、实际点击与视觉效果仍需在使用环境验证。

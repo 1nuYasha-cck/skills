@@ -28,6 +28,18 @@ agent 会：
 4. **用例判断**：逐条给出完全匹配 / 高 / 中 / 低 / 不相关，以及直接复用 / 修改后复用 / 仅参考 / 不建议，附理由、差异和可复核的原文引用；证据不足就写“未判定”。
 5. **输出报告**：agent 写 `search_result.json`，`render` 生成 Markdown 报告，写明实际检索了哪些库、表、文档、关键词和字段，是否读全，失败在哪。
 
+## 索引库、发布范围与章节读取
+
+配置可选 `schema_profile: "indexed"`，适配“摘要索引 + 正文分卷”的已有库；`table_base_tokens` 支持表分布在不同 Base，`field_maps` 支持实际字段名。旧配置仍使用 `config_version: "2.0"`，标准库与外部库保持原行为，样例见 [配置文件](../skills/lark-testcase-search/assets/config.example.json)。
+
+正式索引可以配置 `search_policy`，将 `default_scope` 设为 `published`，并明确发布字段及已发布值。`find`、`locate`、`dump` 默认采用该范围；需要草稿或全部状态时显式指定 `--scope unpublished` 或 `--scope all`。未配置策略的旧库不会自动筛除记录；状态缺失或无法解析的记录不会被当作已发布。
+
+`locate --display-id <原编号>` 与 `locate --case-id <系统用例ID>` 分别在各自字段召回并逐字核对。同一原编号有多条结果时报告歧义，不合并成一条。报告使用可读编号和标题，技术ID与定位信息保留作追溯；浏览视图隐藏的字段仍可从整表读取。
+
+候选记录带有正文定位时，脚本给出 `doc-read` 参数，读取指定章节而非整卷。新章节通过唯一索引记录回链核验身份，通过内容版本及文档 revision 核验版本；错误版本或回链不一致会报告不一致，多回链或证据不足不会被当作确认一致。历史章节没有回链时，可按旧标题中的完整系统ID回退，并用 `identity_basis` 说明依据。
+
+当前 agent 仍须阅读正文，判断真实相关性及可复用性；身份与版本核验不代替内容判断。完整规则见 [检索策略](../skills/lark-testcase-search/references/search-strategy.md)。
+
 ## 结果怎么用
 
 - 报告和 `search_result.json` 可以直接交给 `lark-testcase-write` 编写新用例，接收方 agent 会重新复核，不会照搬检索结论。
