@@ -1,0 +1,20 @@
+{
+  "config_version": "2.0",
+  "libraries": [
+    {
+      "name": "示例标准库",
+      "kind": "standard",
+      "base_token": "example_base",
+      "tables": {"catalog": "example_catalog", "cases": "example_cases", "batches": "example_batches"},
+      "folders": {"root": "example_root", "originals": "example_originals", "bodies": "example_bodies"}
+    },
+    {
+      "name": "示例外部库",
+      "kind": "external",
+      "base_token": "example_external_base",
+      "tables": {"cases": "example_external_cases"},
+      "notes": "由 Agent 阅读字段表理解"
+    }
+  ],
+  "doc_scopes": [{"name": "示例文档目录", "folder_token": "example_folder"}]
+}
