@@ -1,0 +1,5 @@
+{
+  "config_version": "2.0",
+  "libraries": [{"name": "示例用例库", "kind": "standard", "base_token": "<base>", "tables": {"catalog": "<catalog_table>", "cases": "<cases_table>", "batches": "<batches_table>"}, "folders": {"root": "<root_folder>", "originals": "<originals_folder>", "bodies": "<bodies_folder>"}}],
+  "doc_scopes": []
+}
