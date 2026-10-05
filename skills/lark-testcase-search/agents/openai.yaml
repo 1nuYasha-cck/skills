@@ -1,0 +1,4 @@
+interface:
+  display_name: "飞书用例检索"
+  short_description: "只读召回多个飞书用例库，由 Agent 判断匹配度与复用"
+  default_prompt: "使用 $lark-testcase-search 根据本次需求制定检索策略，读取配置中的库和相关飞书文档，逐条引用证据说明匹配度、差异和复用建议，并报告实际检索范围与缺口。"
