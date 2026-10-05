@@ -6,7 +6,7 @@
 
 | Skill                                                     | 说明                                                                                                                                 | 文档                                                               |
 | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| [`dev-flow`](skills/dev-flow)                             | 开发全流程：项目初始化 → 技术方案 → 开发任务包 → 开发执行 → 代码评审 → 提交，用一份 `任务状态.md` 串起来，支持单 agent、多 agent 接力和 herdr 调度（调度部分调用 `herdr-scheduling`）          | [docs/dev-flow.md](docs/dev-flow.md)                             |
+| [`dev-flow`](skills/dev-flow)                             | 开发全流程：项目初始化 → 技术方案 → 开发任务包 → 开发执行 → 代码评审 → 提交，用一份 `任务状态.md` 串起来，支持单 agent 和多 agent 接力，不内置调度          | [docs/dev-flow.md](docs/dev-flow.md)                             |
 | [`herdr-scheduling`](skills/herdr-scheduling)             | 在 herdr 里把任务派发给另一个 pane 的 agent：调度者派发后立即结束本轮不空等，执行者完成后由后台 watcher 回调，执行者因额度限制停下时 watcher 等到恢复时间让同一会话继续；也可被其他 skill（如 `dev-flow`）调用 | [docs/herdr-scheduling.md](docs/herdr-scheduling.md)             |
 | [`lark-testcase-maintain`](skills/lark-testcase-maintain) | 飞书测试用例库维护：兼容标准库与跨 Base 索引/审核台账，支持导入、审核后发布、分卷正文与索引双向链接、浏览视图隐藏技术字段、核对与导出 | [docs/lark-testcase-maintain.md](docs/lark-testcase-maintain.md) |
 | [`lark-testcase-search`](skills/lark-testcase-search)     | 飞书测试用例只读检索：跨库召回、可配置发布范围、可读编号定位与正文章节回链/版本核验，由 agent 判断匹配度和复用建议 | [docs/lark-testcase-search.md](docs/lark-testcase-search.md) |
