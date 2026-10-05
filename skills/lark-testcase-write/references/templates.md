@@ -32,6 +32,10 @@ Markdown：`{"columns":["用例编号","用例标题","测试步骤","预期结�
 
 table 模式依据公共 split_markdown 的限制（每块6000 UTF-8字节、80行）拆成多张表，每张重复表头，以空行分隔，保留每条用例一次。单条表格行无法放入安全块时明确拒绝，应选择 sections 或由 Agent 明确拆分字段，不截断文本。sections 的单个段落仍须满足分块限制。
 
+## 来源与参考
+
+cases.json 记录了 `参考来源`、`document.sources` 或导航时，产物自带可读来源，不只藏在 cases.json：XLSX 在输出副本新增 `来源与参考` 工作表（链接列带超链接，可用 `sources_sheet` 换名，重名拒绝）；DOCX 在文末追加“来源与参考”段落，需求、索引记录、正文章节和导航链接是可点击超链接，显示可读标签（标题、可读编号、“索引记录”“正文章节”“打开草稿目录”）；Markdown 追加 `## 来源与参考` 小节，按条目分块，满足草稿分块限制。可读编号、链接、章节、适配理由、本地路径、未确认项均可见，系统ID 标为“追溯”列。只有映射显式写 `"sources_sheet": false`（XLSX）或 `"sources_section": false`（DOCX/MD）才省略，结果 JSON 的 `sources.location` 记为 `omitted_by_mapping`。映射列引用 `参考来源` 时按条目渲染为可读文本，不输出 JSON。未记录来源时产物与以往一致。主表映射、执行历史列、默认模板选择均不受影响。
+
 ## 默认与文件保护
 
 优先本次模板 → 用户默认 → 内置标准用例表。用户默认位于环境变量 LARK_TESTCASE_WRITE_HOME 指定根的 default-template，缺省为用户配置目录 lark-testcase-write/default-template。只有用户明确要求设为默认，才传 --confirm-default 写入模板副本及映射；不修改安装目录。

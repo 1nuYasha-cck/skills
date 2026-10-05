@@ -16,4 +16,8 @@ Agent 从原文整理完整需求清单，不补造信号阈值、时间、公�
 
 Agent 读取模板结构，确定映射；生成后核对所有用例、长文本、合并、步骤顺序、非目标 Sheet、样式与公式。不把文件可加载当作视觉检查通过。交付来源清单、用例文件、cases.json、覆盖报告、复用说明及未执行验证。
 
+来源：需求链接/章节、参考用例的可读编号、系统ID、内容版本、索引记录与正文章节链接、本次适配理由和未确认项按 [cases-format.md](cases-format.md) 的可选结构记录。只写已核实的值，缺失就留空让产物标“未提供”。Search 报告可作为 `search_report` 来源引用，但其结论须 Agent 复核。
+
+上传时可传 `--cases` 把来源附加到 Markdown 草稿；每份草稿都会追加“草稿导航”：草稿目录链接只来自 `--draft-folder-url` 或 `document.navigation.draft_folder_url`，未提供时写明“未提供”，不从文件夹 token 拼 URL。反向链接仅在 `--backlink` 指定且该链接已列入 `document.navigation.editable_drafts` 时，追加到该 docx/wiki 草稿；需求源、参考用例的索引/正文链接、配置中的正式库 Base/表/正文/原件目录一律拒绝。不修改正式用例或需求源。dry-run 只给计划。
+
 上传需明确目标文件夹，先审查草稿内容及 dry-run。上传后文件列表确认 token，云文档全文回读；这只证明当前上传样本可读取，不代表入库或设备验收。失败保留已完成 token 与错误，不自动重试结果未知的写入。交 Maintain 的文件是普通文档，由 Maintain Agent 再次理解和审核。
