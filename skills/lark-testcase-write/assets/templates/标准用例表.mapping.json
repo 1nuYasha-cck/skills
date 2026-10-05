@@ -1,0 +1,33 @@
+{
+  "sheet": "测试用例",
+  "start_row": 2,
+  "style_row": 2,
+  "row_mode": "per_case",
+  "columns": {
+    "A": "用例编号",
+    "B": "需求编号",
+    "C": "用例标题",
+    "D": "前置条件",
+    "E": "测试步骤",
+    "F": "预期结果"
+  },
+  "clear_example_rows": [
+    2,
+    2
+  ],
+  "list_join": "\n",
+  "number_steps": true,
+  "column_widths": {
+    "A": 30,
+    "B": 28,
+    "C": 40,
+    "D": 45,
+    "E": 60,
+    "F": 60,
+    "G": 28,
+    "H": 28,
+    "I": 18,
+    "J": 28,
+    "K": 18
+  }
+}

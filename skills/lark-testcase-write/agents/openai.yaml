@@ -1,0 +1,4 @@
+interface:
+  display_name: "飞书测试用例编写"
+  short_description: "Agent 理解需求并设计用例，工具核算覆盖、填模板和上传草稿"
+  default_prompt: "使用 $lark-testcase-write 根据我指定的需求和设计方法编写用例，核算覆盖，生成指定模板文件。"
