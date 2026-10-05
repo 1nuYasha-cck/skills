@@ -8,6 +8,6 @@
 
 必填用例编号、用例标题、所属分类、来源位置；步骤/预期至少一项。脚本生成来源文件、入库批次、内容哈希、入库时间。适用版本和来源版本可空，不检查业务语义。审核不阻断入库。
 
-配置格式 `config_version=2.0`，`libraries` 每项含 name、kind、base_token、tables（catalog/cases/batches）、folders（root/originals/bodies）。`doc_scopes` 是 Search 可选读取范围。示例见 `assets/config.example.json`，尖括号标识不得执行。真实配置保存在使用者项目，公开 Skill 不固化业务资源，不依赖开发工作区。
+配置格式 `config_version=2.0`，`libraries` 每项含 name、kind、base_token、tables（catalog/cases/batches）、folders（root/originals/bodies）。可选 `schema_profile` 缺省为 standard；`indexed` 描述已有的索引+维护台账库，见 [索引库](indexed-library.md)，`table_base_tokens`、`field_maps` 仅在该模式支持，标准库配置它们会被拒绝。`search_policy` 属于 Search 的读取策略，标准库忽略。`doc_scopes` 是 Search 可选读取范围。示例见 `assets/config.example.json`，尖括号标识不得执行。真实配置保存在使用者项目，公开 Skill 不固化业务资源，不依赖开发工作区。
 
 `init-library` 创建资源后回读字段；部分失败保留已创建资源清单，不自动删除，确认残留后再决定续建方式。平台可能另建默认首表，三张标准表的 ID 以输出配置为准。

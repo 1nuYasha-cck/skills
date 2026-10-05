@@ -110,6 +110,15 @@ def library_config(config, library):
     lib = matches[0]
     if lib.get('kind') != 'standard':
         raise ValueError('Maintain requires kind=standard')
+    profile = lib.get('schema_profile', 'standard')
+    if profile == 'indexed':
+        import indexed
+        indexed.validate_config(lib)
+        return lib
+    if profile != 'standard':
+        raise ValueError('schema_profile must be standard or indexed')
+    if lib.get('table_base_tokens') or lib.get('field_maps'):
+        raise ValueError('table_base_tokens/field_maps are supported only with schema_profile=indexed')
     if not lib.get('base_token') or any(not lib.get('tables', {}).get(k) for k in TABLE_NAMES) or any(not lib.get('folders', {}).get(k) for k in ('root', 'originals', 'bodies')):
         raise ValueError('standard library requires base, three tables and three folders')
     if any('<' in str(v) for v in [lib['base_token'], *lib['tables'].values(), *lib['folders'].values()]):
@@ -292,8 +301,15 @@ def init_library(name, parent_folder=None, dry_run=False):
     return result
 
 
+def is_indexed(lib):
+    return lib.get('schema_profile', 'standard') == 'indexed'
+
+
 def inspect_library(config, library):
     lib = library_config(config, library)
+    if is_indexed(lib):
+        import indexed
+        return indexed.inspect(lib)
     actual = schema(lib)
     rows = read_all(lib)
     return dict(status='ok', fields=actual, missing_fields={k: sorted(field_names(STANDARD_TABLES[k]) - field_names(actual[k])) for k in TABLE_NAMES}, schema_mismatch=schema_mismatch(actual), categories=rows['catalog'], cases_count=len(rows['cases']), complete=True)
@@ -307,6 +323,9 @@ def require_batch(result):
 
 def run_import(config, plan, *, dry_run=False):
     lib = library_config(config, plan.get('library'))
+    if is_indexed(lib):
+        import indexed
+        return indexed.run_import(lib, plan, dry_run=dry_run)
     report = dict(status='failed', steps=[], operations=[], readback={}, links=dict(base=lib.get('url'), base_token=lib['base_token'], tables=lib['tables']), dry_run=dry_run)
     base, tables = lib['base_token'], lib['tables']
     wrote = False
@@ -565,7 +584,11 @@ def run_import(config, plan, *, dry_run=False):
 
 
 def check_library(config, library):
-    lib = library_config(config, library); rows = read_all(lib)
+    lib = library_config(config, library)
+    if is_indexed(lib):
+        import indexed
+        return indexed.check(lib)
+    rows = read_all(lib)
     issues, seen = [], set()
     paths = {r['fields'].get('分类路径'): r for r in rows['catalog']}
     for record in rows['cases']:
@@ -598,6 +621,9 @@ def check_library(config, library):
 
 def export_library(config, library, out_dir):
     lib = library_config(config, library)
+    if is_indexed(lib):
+        import indexed
+        return indexed.export(lib, out_dir)
     directory = Path(out_dir); directory.mkdir(parents=True, exist_ok=True)
     manifest = dict(status='ok', library=library, files=[], errors=[], complete=True)
     for key, table in lib['tables'].items():
@@ -628,10 +654,26 @@ def export_library(config, library, out_dir):
     return manifest
 
 
+def publish_library(config, library, selection=None, *, dry_run=False):
+    lib = library_config(config, library)
+    if not is_indexed(lib):
+        raise ValueError('publish applies to schema_profile=indexed; standard imports are already the library of record')
+    import indexed
+    return indexed.publish(lib, selection, dry_run=dry_run)
+
+
+def browse_view(config, library, *, dry_run=False):
+    lib = library_config(config, library)
+    if not is_indexed(lib):
+        raise ValueError('browse-view applies to schema_profile=indexed')
+    import indexed
+    return indexed.manage_browse_view(lib, dry_run=dry_run)
+
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('init-library', 'inspect-library', 'import', 'check', 'export'):
+    for name in ('init-library', 'inspect-library', 'import', 'check', 'export', 'publish', 'browse-view'):
         cmd = sub.add_parser(name)
         cmd.add_argument('--out-dir' if name == 'export' else '--out', required=True)
         cmd.add_argument('--overwrite', action='store_true')
@@ -643,17 +685,21 @@ def main():
                 cmd.add_argument('--plan', required=True); cmd.add_argument('--dry-run', action='store_true')
             else:
                 cmd.add_argument('--library', required=True)
+            if name == 'publish':
+                cmd.add_argument('--plan'); cmd.add_argument('--dry-run', action='store_true')
+            if name == 'browse-view':
+                cmd.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     try:
         inputs = [getattr(args, n) for n in ('config', 'plan') if getattr(args, n, None)]
         config = json.loads(Path(args.config).read_text()) if hasattr(args, 'config') else None
-        plan = json.loads(Path(args.plan).read_text()) if hasattr(args, 'plan') else None
-        sources = [plan.get('batch', {}).get('source_file', '')] if plan else []
+        plan = json.loads(Path(args.plan).read_text()) if getattr(args, 'plan', None) else None
+        sources = [plan.get('batch', {}).get('source_file', '')] if plan and args.command == 'import' else []
         inputs.extend(sources)
         target = io.safe_output(args.out_dir if args.command == 'export' else args.out, inputs, sources=sources, overwrite=args.overwrite, directory=args.command == 'export')
         if args.command == 'export' and target.exists():
             # Only known export names are overwritten; refuse foreign contents.
-            if any(not re.fullmatch(r'(catalog|cases|batches)\.ndjson|manifest\.json|body-\d{4}\.md', p.name) for p in target.iterdir()):
+            if any(not re.fullmatch(r'(catalog|cases|batches|sources|review|issues|routes)\.ndjson|manifest\.json|body-\d{4}\.(md|xml)', p.name) for p in target.iterdir()):
                 raise ValueError('export directory contains unrelated files')
         if args.command == 'init-library':
             result = init_library(args.name, args.parent_folder, args.dry_run)
@@ -663,6 +709,10 @@ def main():
             result = inspect_library(config, args.library)
         elif args.command == 'check':
             result = check_library(config, args.library)
+        elif args.command == 'publish':
+            result = publish_library(config, args.library, plan, dry_run=args.dry_run)
+        elif args.command == 'browse-view':
+            result = browse_view(config, args.library, dry_run=args.dry_run)
         else:
             result = export_library(config, args.library, target)
         if args.command != 'export':

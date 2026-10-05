@@ -1,5 +1,25 @@
 {
   "config_version": "2.0",
-  "libraries": [{"name": "示例用例库", "kind": "standard", "base_token": "<base>", "tables": {"catalog": "<catalog_table>", "cases": "<cases_table>", "batches": "<batches_table>"}, "folders": {"root": "<root_folder>", "originals": "<originals_folder>", "bodies": "<bodies_folder>"}}],
+  "libraries": [
+    {"name": "示例用例库", "kind": "standard", "base_token": "<base>", "tables": {"catalog": "<catalog_table>", "cases": "<cases_table>", "batches": "<batches_table>"}, "folders": {"root": "<root_folder>", "originals": "<originals_folder>", "bodies": "<bodies_folder>"}},
+    {
+      "name": "示例正式库",
+      "kind": "standard",
+      "schema_profile": "indexed",
+      "base_token": "<index_base>",
+      "tables": {"catalog": "<catalog_table>", "cases": "<index_table>", "routes": "<routes_table>", "sources": "<sources_table>", "batches": "<batches_table>", "issues": "<issues_table>", "review": "<review_table>"},
+      "table_base_tokens": {"sources": "<ledger_base>", "batches": "<ledger_base>", "issues": "<ledger_base>", "review": "<ledger_base>"},
+      "field_maps": {},
+      "folders": {"originals": "<originals_folder>", "bodies": "<bodies_folder>"},
+      "search_policy": {"default_scope": "published", "publication_field": "发布状态", "published_values": ["已发布"]},
+      "maintain": {
+        "web_url": "https://<tenant-domain>",
+        "catalog_doc": "<body_catalog_doc_token_or_url>",
+        "browse": {"view": "<browse_view_id>", "full_view": "<full_fields_view_id>", "fields": ["标题", "原用例编号", "项目", "模块", "功能点", "需求编号", "适用版本", "用例类型", "优先级", "关键词", "摘要", "内容版本", "发布状态", "审核状态", "正文链接"]},
+        "volume": {"max_cases": 30, "max_chars": 60000},
+        "navigation_headings": ["用例双向导航"]
+      }
+    }
+  ],
   "doc_scopes": []
 }

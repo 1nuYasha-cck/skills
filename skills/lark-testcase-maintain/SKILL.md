@@ -1,6 +1,6 @@
 ---
 name: lark-testcase-maintain
-description: 理解并整理普通测试用例文档，再通过飞书CLI归档到标准用例库；支持分类正文、重复导入、只读核对和导出。理解与分类由当前Agent完成，版本可空。
+description: 理解并整理普通测试用例文档，再通过飞书CLI归档到标准用例库或已有的索引+维护台账库；支持分类正文、重复导入、审核后发布、双向导航、只读核对和导出。理解与分类由当前Agent完成，版本可空。
 ---
 
 # 飞书测试用例库维护
@@ -25,6 +25,15 @@ python3 scripts/maintain.py import --config <配置> --plan <计划> --out <另�
 ```
 
 所有输出必须由用户指定，不能覆盖任一输入，也不能位于来源文件目录内。配置或计划位于项目根时，报告可写到项目内其他目录。已存在拒绝，显式 `--overwrite` 才允许覆盖；原件绝不写回。stdout 一行 JSON 摘要；退出码 0 成功、2 输入问题、3 远端失败或部分失败。报告含资源标识，但不得记录认证信息。
+
+## 索引库（审核后发布）
+
+库配置为 `schema_profile=indexed` 时按 [索引库](references/indexed-library.md) 执行：`import` 只归档原件、登记批次并写待审核行，保存不等于发布；人在审核表通过后，`publish` 从 Base 重新读取审核、内容与元数据，先写入并回读正文章节，再更新正式索引和双向链接。审核后改动、缺 `maintain.web_url`、正文失败或结果未知都不发布。`browse-view` 只调整配置的普通浏览视图。表可跨 Base，字段可映射。
+
+```bash
+python3 scripts/maintain.py publish --config <配置> --library <库名> --out <报告> --dry-run
+python3 scripts/maintain.py browse-view --config <配置> --library <库名> --out <报告> --dry-run
+```
 
 ## 维护与联动
 

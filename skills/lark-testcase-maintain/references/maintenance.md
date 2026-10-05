@@ -5,6 +5,8 @@ python3 scripts/maintain.py check --config <配置> --library <库名> --out <�
 python3 scripts/maintain.py export --config <配置> --library <库名> --out-dir <备份目录>
 ```
 
+索引库（schema_profile=indexed）的 check/export 覆盖全部注册表和被引用正文，规则见 [索引库](indexed-library.md)。以下为标准库。
+
 check 只读，报告重复编号、缺必填字段、缺分类、目录有效用例数不符、缺正文链接、业务内容与存储哈希不符。发现问题不自动修复；由 Agent 通读原文、记录和人工改动后提出修订计划。
 
 export 只读导出三表 ndjson、正文 Markdown 和 manifest（数量、SHA-256、完整性）。分页或正文失败时保存已读取内容并标 partial，不称完整备份。输出目录已存在默认拒绝；overwrite 只允许已知导出文件目录。这里没有灾备恢复或并发条件写入能力。
